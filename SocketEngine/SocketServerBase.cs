@@ -13,11 +13,16 @@ using SuperSocket.Common;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Logging;
+using SuperSocket.SocketBase.Pool;
 using SuperSocket.SocketBase.Protocol;
+using SuperSocket.SocketBase.Utils;
+using SuperSocket.SocketBase.ServerResource;
+using SuperSocket.SocketEngine.ServerResource;
+using System.Threading.Tasks;
 
 namespace SuperSocket.SocketEngine
 {
-    abstract class SocketServerBase : ISocketServer, IDisposable
+    abstract class SocketServerBase : ISocketServer, IDisposable, IAsyncSocketEventComplete
     {
         protected object SyncRoot = new object();
 
@@ -30,6 +35,35 @@ namespace SuperSocket.SocketEngine
         protected List<ISocketListener> Listeners { get; private set; }
 
         protected bool IsStopped { get; set; }
+
+        private IPool<SaeState> m_SaePool;
+
+        protected IPool<SaeState> SaePool
+        {
+            get { return m_SaePool; }
+        }
+
+        private IPool<BufferState> m_BufferStatePool;
+
+        protected IPool<BufferState> BufferStatePool
+        {
+            get { return m_BufferStatePool; }
+        }
+
+        /// <summary>
+        /// Gets the sending queue manager.
+        /// </summary>
+        /// <value>
+        /// The sending queue manager.
+        /// </value>
+        internal IPool<SendingQueue> SendingQueuePool { get; private set; }
+
+        IPool ISocketServer.SendingQueuePool
+        {
+            get { return this.SendingQueuePool; }
+        }
+
+        private ServerResourceItem[] m_ServerResources;
 
         public SocketServerBase(IAppServer appServer, ListenerInfo[] listeners)
         {
@@ -45,6 +79,42 @@ namespace SuperSocket.SocketEngine
         {
             IsStopped = false;
 
+            ILog log = AppServer.Logger;
+
+            try
+            {
+                using (var transaction = new LightweightTransaction())
+                {
+                    var config = this.AppServer.Config;
+
+                    transaction.RegisterItem(ServerResourceItem.Create<SaePoolResource, IPool<SaeState>>(
+                        (pool) => this.m_SaePool = pool, config));
+
+                    transaction.RegisterItem(ServerResourceItem.Create<BufferStatePoolResource, IPool<BufferState>>(
+                        (pool) => this.m_BufferStatePool = pool, config));
+
+                    transaction.RegisterItem(ServerResourceItem.Create<SendingQueuePoolResource, IPool<SendingQueue>>(
+                        (pool) => this.SendingQueuePool = pool, config));
+
+                    if (!StartListeners())
+                        return false;
+
+                    m_ServerResources = transaction.Items.OfType<ServerResourceItem>().ToArray();
+                    transaction.Commit();
+                }
+            }
+            catch (Exception e)
+            {
+                log.Error(e);
+                return false;
+            }
+
+            IsRunning = true;
+            return true;
+        }
+
+        private bool StartListeners()
+        {
             ILog log = AppServer.Logger;
 
             for (var i = 0; i < ListenerInfos.Length; i++)
@@ -80,7 +150,6 @@ namespace SuperSocket.SocketEngine
                 }
             }
 
-            IsRunning = true;
             return true;
         }
 
@@ -88,25 +157,12 @@ namespace SuperSocket.SocketEngine
 
         void OnListenerError(ISocketListener listener, Exception e)
         {
-            listener.Stop();
-
             var logger = this.AppServer.Logger;
 
             if(!logger.IsErrorEnabled)
                 return;
 
-            if (e is ObjectDisposedException || e is NullReferenceException)
-                return;
-
-            var socketException = e as SocketException;
-
-            if (socketException != null)
-            {
-                if (socketException.ErrorCode == 995 || socketException.ErrorCode == 10004 || socketException.ErrorCode == 10038)
-                    return;
-            }
-
-            logger.ErrorFormat(string.Format("Listener ({0}) error: {1}", listener.EndPoint, e.Message), e);
+            logger.Error(string.Format("Listener ({0}) error: {1}", listener.EndPoint, e.Message), e);
         }
 
         void OnListenerStopped(object sender, EventArgs e)
@@ -116,7 +172,7 @@ namespace SuperSocket.SocketEngine
             ILog log = AppServer.Logger;
 
             if (log.IsDebugEnabled)
-                log.DebugFormat("Listener ({0}) was stoppped", listener.EndPoint);
+                log.DebugFormat("Listener ({0}) was stopped", listener.EndPoint);
         }
 
         protected abstract ISocketListener CreateListener(ListenerInfo listenerInfo);
@@ -134,7 +190,20 @@ namespace SuperSocket.SocketEngine
 
             Listeners.Clear();
 
+            // Clean the attached server resources
+            if (m_ServerResources != null)
+            {
+                Parallel.ForEach(m_ServerResources, (r) => r.Rollback());
+            }
+
             IsRunning = false;
+        }
+
+        void IAsyncSocketEventComplete.HandleSocketEventComplete(object sender, SocketAsyncEventArgs e)
+        {
+            var userToken = e.UserToken as SaeState;
+            var socketSession = userToken.SocketSession as IAsyncSocketSession;
+            socketSession.ProcessReceive(e);
         }
 
         #region IDisposable Members

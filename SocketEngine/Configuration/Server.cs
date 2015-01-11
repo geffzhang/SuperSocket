@@ -16,7 +16,7 @@ namespace SuperSocket.SocketEngine.Configuration
     /// <summary>
     /// Server configuration
     /// </summary>
-    public class Server : ConfigurationElementBase, IServerConfig
+    public partial class Server : ConfigurationElementBase, IServerConfig
     {
         /// <summary>
         /// Gets the name of the server type this appServer want to use.
@@ -79,6 +79,56 @@ namespace SuperSocket.SocketEngine.Configuration
         }
 
         /// <summary>
+        /// Gets the protocol the server instance want to use.
+        /// </summary>
+        /// <value>
+        /// The protocol  the server instance want to use.
+        /// </value>
+        [ConfigurationProperty("protocol", IsRequired = false, DefaultValue = "CommandLine")]
+        public ProtocolMode Protocol
+        {
+            get { return (ProtocolMode)this["protocol"]; }
+        }
+
+
+        /// <summary>
+        /// Gets the request handling mode.
+        /// </summary>
+        /// <value>
+        /// The request handling mode.
+        /// </value>
+        [ConfigurationProperty("requestHandlingMode", IsRequired = false, DefaultValue = "Default")]
+        public RequestHandlingMode RequestHandlingMode
+        {
+            get { return (RequestHandlingMode)this["requestHandlingMode"]; }
+        }
+
+
+        /// <summary>
+        /// Gets the minimum count of request handling threads.
+        /// </summary>
+        /// <value>
+        /// Gets the minimum count of request handling threads.
+        /// </value>
+        [ConfigurationProperty("minRequestHandlingThreads", IsRequired = false, DefaultValue = ServerConfig.DefaultMinRequestHandlingThreads)]
+        public int MinRequestHandlingThreads
+        {
+            get { return (int)this["minRequestHandlingThreads"]; }
+        }
+
+        /// <summary>
+        /// Gets the maximum request handling threads count.
+        /// </summary>
+        /// <value>
+        /// The maximum request handling threads count.
+        /// </value>
+        [ConfigurationProperty("maxRequestHandlingThreads", IsRequired = false, DefaultValue = ServerConfig.DefaultMaxRequestHandlingThreads)]
+        public int MaxRequestHandlingThreads
+        {
+            get { return (int)this["maxRequestHandlingThreads"]; }
+        }
+
+        /// <summary>
         /// Gets a value indicating whether this <see cref="IServerConfig"/> is disabled.
         /// </summary>
         /// <value>
@@ -93,7 +143,7 @@ namespace SuperSocket.SocketEngine.Configuration
         /// <summary>
         /// Gets the send time out.
         /// </summary>
-        [ConfigurationProperty("sendTimeOut", IsRequired = false, DefaultValue = 0)]
+        [ConfigurationProperty("sendTimeOut", IsRequired = false, DefaultValue = ServerConfig.DefaultSendTimeout)]
         public int SendTimeOut
         {
             get { return (int)this["sendTimeOut"]; }
@@ -193,7 +243,7 @@ namespace SuperSocket.SocketEngine.Configuration
         /// Gets the clear idle session interval, in seconds.
         /// </summary>
         /// <value>The clear idle session interval.</value>
-        [ConfigurationProperty("clearIdleSessionInterval", IsRequired = false, DefaultValue = 120)]
+        [ConfigurationProperty("clearIdleSessionInterval", IsRequired = false, DefaultValue = ServerConfig.DefaultClearIdleSessionInterval)]
         public int ClearIdleSessionInterval
         {
             get { return (int)this["clearIdleSessionInterval"]; }
@@ -204,7 +254,7 @@ namespace SuperSocket.SocketEngine.Configuration
         /// Gets the idle session timeout time length, in seconds.
         /// </summary>
         /// <value>The idle session time out.</value>
-        [ConfigurationProperty("idleSessionTimeOut", IsRequired = false, DefaultValue = 300)]
+        [ConfigurationProperty("idleSessionTimeOut", IsRequired = false, DefaultValue = ServerConfig.DefaultIdleSessionTimeOut)]
         public int IdleSessionTimeOut
         {
             get { return (int)this["idleSessionTimeOut"]; }
@@ -366,7 +416,7 @@ namespace SuperSocket.SocketEngine.Configuration
         /// <value>
         /// The size of the sending queue.
         /// </value>
-        [ConfigurationProperty("sendingQueueSize", IsRequired = false, DefaultValue = 16)]
+        [ConfigurationProperty("sendingQueueSize", IsRequired = false, DefaultValue = ServerConfig.DefaultSendingQueueSize)]
         public int SendingQueueSize
         {
             get
@@ -384,6 +434,21 @@ namespace SuperSocket.SocketEngine.Configuration
             get
             {
                 return (string)this["logFactory"];
+            }
+        }
+
+        /// <summary>
+        /// Gets the default text encoding.
+        /// </summary>
+        /// <value>
+        /// The text encoding.
+        /// </value>
+        [ConfigurationProperty("textEncoding", IsRequired = false, DefaultValue = "")]
+        public string TextEncoding
+        {
+            get
+            {
+                return (string)this["textEncoding"];
             }
         }
 
@@ -430,6 +495,25 @@ namespace SuperSocket.SocketEngine.Configuration
             get { return this.CommandAssemblies; }
         }
 
+        /// <summary>
+        /// Gets the buffer pools configuration.
+        /// </summary>
+        /// <value>
+        /// The buffer pools configuration.
+        /// </value>
+        [ConfigurationProperty("bufferPools", IsRequired = false)]
+        public BufferPoolConfigCollection BufferPools
+        {
+            get
+            {
+                return this["bufferPools"] as BufferPoolConfigCollection;
+            }
+        }
+
+        IEnumerable<IBufferPoolConfig> IServerConfig.BufferPools
+        {
+            get { return this.BufferPools; }
+        }
         /// <summary>
         /// Gets the child config.
         /// </summary>

@@ -9,105 +9,92 @@ using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Logging;
 using SuperSocket.SocketBase.Provider;
 using SuperSocket.SocketEngine.Configuration;
+using SuperSocket.SocketBase.Metadata;
 
 namespace SuperSocket.SocketEngine
 {
+    class AppDomainWorkItemFactoryInfoLoader : WorkItemFactoryInfoLoader
+    {
+        public AppDomainWorkItemFactoryInfoLoader(IConfigurationSource config, ILogFactory passedInLogFactory)
+            : base(config, passedInLogFactory)
+        {
+            InitliazeValidationAppDomain();
+        }
+
+        public AppDomainWorkItemFactoryInfoLoader(IConfigurationSource config)
+            : base(config)
+        {
+            InitliazeValidationAppDomain();
+        }
+
+        private AppDomain m_ValidationAppDomain;
+
+        private TypeValidator m_Validator;
+
+        private void InitliazeValidationAppDomain()
+        {
+            m_ValidationAppDomain = AppDomain.CreateDomain("ValidationDomain", AppDomain.CurrentDomain.Evidence, AppDomain.CurrentDomain.BaseDirectory, string.Empty, false);
+
+            var validatorType = typeof(TypeValidator);
+            m_Validator = (TypeValidator)m_ValidationAppDomain.CreateInstanceAndUnwrap(validatorType.Assembly.FullName, validatorType.FullName);
+        }
+
+        protected override string ValidateProviderType(string typeName)
+        {
+            if (!m_Validator.ValidateTypeName(typeName))
+                throw new Exception(string.Format("Failed to load type {0}!", typeName));
+
+            return typeName;
+        }
+
+        protected override ServerTypeMetadata GetServerTypeMetadata(string typeName)
+        {
+            return m_Validator.GetServerTypeMetadata(typeName);
+        }
+
+        public override void Dispose()
+        {
+            if (m_ValidationAppDomain != null)
+            {
+                AppDomain.Unload(m_ValidationAppDomain);
+                m_ValidationAppDomain = null;
+            }
+
+            base.Dispose();
+        }
+    }
+
+    class DefaultBootstrapAppDomainWrap : DefaultBootstrap
+    {
+        private IBootstrap m_Bootstrap;
+
+        public DefaultBootstrapAppDomainWrap(IBootstrap bootstrap, IConfigurationSource config, string startupConfigFile)
+            : base(config, startupConfigFile)
+        {
+            m_Bootstrap = bootstrap;
+        }
+
+        protected override IWorkItem CreateWorkItemInstance(string serviceTypeName, StatusInfoAttribute[] serverStatusMetadata)
+        {
+            return new AppDomainAppServer(serviceTypeName, serverStatusMetadata);
+        }
+
+        internal override bool SetupWorkItemInstance(IWorkItem workItem, WorkItemFactoryInfo factoryInfo)
+        {
+            return workItem.Setup(m_Bootstrap, factoryInfo.Config, factoryInfo.ProviderFactories.ToArray());
+        }
+
+        internal override WorkItemFactoryInfoLoader GetWorkItemFactoryInfoLoader(IConfigurationSource config, ILogFactory logFactory)
+        {
+            return new AppDomainWorkItemFactoryInfoLoader(config, logFactory);
+        }
+    }
+
     /// <summary>
     /// AppDomainBootstrap
     /// </summary>
-    public sealed class AppDomainBootstrap : MarshalByRefObject, IBootstrap
+    class AppDomainBootstrap : MarshalByRefObject, IBootstrap, IDisposable
     {
-        class AppDomainWorkItemFactoryInfoLoader : WorkItemFactoryInfoLoader
-        {
-            class TypeValidator : MarshalByRefObject
-            {
-                public bool ValidateTypeName(string typeName)
-                {
-                    Type type = null;
-
-                    try
-                    {
-                        type = Type.GetType(typeName, false);
-                    }
-                    catch
-                    {
-
-                    }
-
-                    return type != null;
-                }
-            }
-
-            public AppDomainWorkItemFactoryInfoLoader(IConfigurationSource config, ILogFactory passedInLogFactory)
-                : base(config, passedInLogFactory)
-            {
-                InitliazeValidationAppDomain();
-            }
-
-            public AppDomainWorkItemFactoryInfoLoader(IConfigurationSource config)
-                : base(config)
-            {
-                InitliazeValidationAppDomain();
-            }
-
-            private AppDomain m_ValidationAppDomain;
-
-            private TypeValidator m_Validator; 
-
-            private void InitliazeValidationAppDomain()
-            {
-                m_ValidationAppDomain = AppDomain.CreateDomain("ValidationDomain", AppDomain.CurrentDomain.Evidence, AppDomain.CurrentDomain.BaseDirectory, string.Empty, false);
-
-                var validatorType = typeof(TypeValidator);
-                m_Validator = (TypeValidator)m_ValidationAppDomain.CreateInstanceAndUnwrap(validatorType.Assembly.FullName, validatorType.FullName);
-            }
-
-            protected override string ValidateProviderType(string typeName)
-            {
-                if (!m_Validator.ValidateTypeName(typeName))
-                    throw new Exception(string.Format("Failed to load type {0}!", typeName));
-
-                return typeName;
-            }
-
-            public override void Dispose()
-            {
-                if (m_ValidationAppDomain != null)
-                {
-                    AppDomain.Unload(m_ValidationAppDomain);
-                    m_ValidationAppDomain = null;
-                }
-
-                base.Dispose();
-            }
-        }
-
-        class DefaultBootstrapAppDomainWrap : DefaultBootstrap
-        {
-            private AppDomainBootstrap m_AppDomainBootstrap;
-
-            public DefaultBootstrapAppDomainWrap(AppDomainBootstrap appDomainBootstrap, IConfigurationSource config, string startupConfigFile)
-                : base(config, startupConfigFile)
-            {
-                m_AppDomainBootstrap = appDomainBootstrap;
-            }
-
-            protected override IWorkItem CreateWorkItemInstance(string serviceTypeName)
-            {
-                return new AppDomainAppServer(serviceTypeName);
-            }
-
-            internal override bool SetupWorkItemInstance(IWorkItem workItem, WorkItemFactoryInfo factoryInfo)
-            {
-                return workItem.Setup(m_AppDomainBootstrap, factoryInfo.Config, factoryInfo.ProviderFactories.ToArray());
-            }
-
-            internal override WorkItemFactoryInfoLoader GetWorkItemFactoryInfoLoader(IConfigurationSource config, ILogFactory logFactory)
-            {
-                return new AppDomainWorkItemFactoryInfoLoader(config, logFactory);
-            }
-        }
-
         private IBootstrap m_InnerBootstrap;
 
         /// <summary>
@@ -154,7 +141,14 @@ namespace SuperSocket.SocketEngine
                 config = new ConfigurationSource(config);
 
             //Still use raw configuration type to bootstrap
-            m_InnerBootstrap = new DefaultBootstrapAppDomainWrap(this, config, startupConfigFile);
+            m_InnerBootstrap = CreateBootstrapWrap(this, config, startupConfigFile);
+
+            AppDomain.CurrentDomain.SetData("Bootstrap", this);
+        }
+
+        protected virtual IBootstrap CreateBootstrapWrap(IBootstrap bootstrap, IConfigurationSource config, string startupConfigFile)
+        {
+            return new DefaultBootstrapAppDomainWrap(this, config, startupConfigFile);
         }
 
         /// <summary>
@@ -225,6 +219,18 @@ namespace SuperSocket.SocketEngine
         public void Stop()
         {
             m_InnerBootstrap.Stop();
+        }
+
+        public string BaseDirectory
+        {
+            get { return m_InnerBootstrap.BaseDirectory; }
+        }
+
+        void IDisposable.Dispose()
+        {
+            var disposableBootstrap = m_InnerBootstrap as IDisposable;
+            if (disposableBootstrap != null)
+                disposableBootstrap.Dispose();
         }
     }
 }

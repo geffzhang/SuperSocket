@@ -6,15 +6,15 @@ using System.Net.Sockets;
 using System.Text;
 using System.Threading;
 using SuperSocket.Common;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Protocol;
-using SuperSocket.SocketEngine.AsyncSocket;
 
 namespace SuperSocket.SocketEngine
 {
-    class UdpSocketServer<TRequestInfo> : SocketServerBase
-        where TRequestInfo : IRequestInfo
+    class UdpSocketServer<TPackageInfo> : SocketServerBase
+        where TPackageInfo : IPackageInfo
     {
         private IPEndPoint m_EndPointIPv4;
 
@@ -22,28 +22,28 @@ namespace SuperSocket.SocketEngine
 
         private bool m_IsUdpRequestInfo = false;
 
-        private IReceiveFilter<TRequestInfo> m_UdpRequestFilter;
+        private IReceiveFilter<TPackageInfo> m_UdpRequestFilter;
 
         private int m_ConnectionCount = 0;
 
-        private IRequestHandler<TRequestInfo> m_RequestHandler;
+        private IRequestHandler<TPackageInfo> m_RequestHandler;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="UdpSocketServer&lt;TRequestInfo&gt;"/> class.
+        /// Initializes a new instance of the <see cref="UdpSocketServer&lt;TPackageInfo&gt;"/> class.
         /// </summary>
         /// <param name="appServer">The app server.</param>
         /// <param name="listeners">The listeners.</param>
         public UdpSocketServer(IAppServer appServer, ListenerInfo[] listeners)
             : base(appServer, listeners)
         {
-            m_RequestHandler = appServer as IRequestHandler<TRequestInfo>;
+            m_RequestHandler = appServer as IRequestHandler<TPackageInfo>;
 
             m_EndPointIPv4 = new IPEndPoint(IPAddress.Any, 0);
             m_EndPointIPv6 = new IPEndPoint(IPAddress.IPv6Any, 0);
 
-            m_IsUdpRequestInfo = typeof(TRequestInfo).IsSubclassOf(typeof(UdpRequestInfo));
+            m_IsUdpRequestInfo = typeof(IUdpPackageInfo).IsAssignableFrom(typeof(TPackageInfo));
 
-            m_UdpRequestFilter = ((IReceiveFilterFactory<TRequestInfo>)appServer.ReceiveFilterFactory).CreateFilter(appServer, null, null);
+            m_UdpRequestFilter = ((IReceiveFilterFactory<TPackageInfo>)appServer.ReceiveFilterFactory).CreateFilter(appServer, null, null);
         }
 
         /// <summary>
@@ -54,42 +54,57 @@ namespace SuperSocket.SocketEngine
         /// <param name="state">The state.</param>
         protected override void OnNewClientAccepted(ISocketListener listener, Socket client, object state)
         {
-            var paramArray = state as object[];
+            var eventArgs = state as SocketAsyncEventArgs;
+            var saeState = eventArgs.UserToken as SaeState;
 
-            var receivedData = paramArray[0] as byte[];
-            var socketAddress = paramArray[1] as SocketAddress;
-            var remoteEndPoint = (socketAddress.Family == AddressFamily.InterNetworkV6 ? m_EndPointIPv6.Create(socketAddress) : m_EndPointIPv4.Create(socketAddress)) as IPEndPoint;
+            var remoteEndPoint = eventArgs.RemoteEndPoint as IPEndPoint;
+            var receivedData = new ArraySegment<byte>(eventArgs.Buffer, eventArgs.Offset, eventArgs.BytesTransferred);
 
-            if (m_IsUdpRequestInfo)
+            try
             {
-                ProcessPackageWithSessionID(client, remoteEndPoint, receivedData);
+                if (m_IsUdpRequestInfo)
+                {
+                    ProcessPackageWithSessionID(client, remoteEndPoint, receivedData);
+                }
+                else
+                {
+                    ProcessPackageWithoutSessionID(client, remoteEndPoint, receivedData, saeState);
+                }
             }
-            else
+            catch (Exception e)
             {
-                ProcessPackageWithoutSessionID(client, remoteEndPoint, receivedData);
+                if (AppServer.Logger.IsErrorEnabled)
+                    AppServer.Logger.Error("Process UDP package error!", e);
+            }
+            finally
+            {
+                SaePool.Return(saeState);
             }
         }
 
-        void ProcessPackageWithSessionID(Socket listenSocket, IPEndPoint remoteEndPoint, byte[] receivedData)
+        void ProcessPackageWithSessionID(Socket listenSocket, IPEndPoint remoteEndPoint, ArraySegment<byte> receivedData)
         {
-            TRequestInfo requestInfo;
-            
+            TPackageInfo requestInfo;
+
             string sessionID;
 
             int rest;
 
             try
             {
-                requestInfo = this.m_UdpRequestFilter.Filter(receivedData, 0, receivedData.Length, false, out rest);
+                var receiveData = new BufferList();
+                receiveData.Add(receivedData);
+
+                requestInfo = this.m_UdpRequestFilter.Filter(receiveData, out rest);
             }
             catch (Exception exc)
             {
-                if(AppServer.Logger.IsErrorEnabled)
+                if (AppServer.Logger.IsErrorEnabled)
                     AppServer.Logger.Error("Failed to parse UDP package!", exc);
                 return;
             }
 
-            var udpRequestInfo = requestInfo as UdpRequestInfo;
+            var udpRequestInfo = requestInfo as IUdpPackageInfo;
 
             if (rest > 0)
             {
@@ -114,7 +129,7 @@ namespace SuperSocket.SocketEngine
 
             sessionID = udpRequestInfo.SessionID;
 
-            var appSession = AppServer.GetAppSessionByID(sessionID);
+            var appSession = AppServer.GetSessionByID(sessionID);
 
             if (appSession == null)
             {
@@ -125,6 +140,12 @@ namespace SuperSocket.SocketEngine
                 appSession = AppServer.CreateAppSession(socketSession);
 
                 if (appSession == null)
+                    return;
+
+                if (!DetectConnectionNumber(remoteEndPoint))
+                    return;
+
+                if (!AppServer.RegisterSession(appSession))
                     return;
 
                 Interlocked.Increment(ref m_ConnectionCount);
@@ -142,10 +163,10 @@ namespace SuperSocket.SocketEngine
             m_RequestHandler.ExecuteCommand(appSession, requestInfo);
         }
 
-        void ProcessPackageWithoutSessionID(Socket listenSocket, IPEndPoint remoteEndPoint, byte[] receivedData)
+        void ProcessPackageWithoutSessionID(Socket listenSocket, IPEndPoint remoteEndPoint, ArraySegment<byte> receivedData, SaeState saeState)
         {
             var sessionID = remoteEndPoint.ToString();
-            var appSession = AppServer.GetAppSessionByID(sessionID);
+            var appSession = AppServer.GetSessionByID(sessionID);
 
             if (appSession == null) //New session
             {
@@ -159,16 +180,18 @@ namespace SuperSocket.SocketEngine
                 if (appSession == null)
                     return;
 
+                if (!DetectConnectionNumber(remoteEndPoint))
+                    return;
+
+                if (!AppServer.RegisterSession(appSession))
+                    return;
+
                 Interlocked.Increment(ref m_ConnectionCount);
                 socketSession.Closed += OnSocketSessionClosed;
                 socketSession.Start();
+            }
 
-                appSession.ProcessRequest(receivedData, 0, receivedData.Length, false);
-            }
-            else //Existing session
-            {
-                appSession.ProcessRequest(receivedData, 0, receivedData.Length, false);
-            }
+            ((UdpSocketSession)appSession.SocketSession).ProcessReceivedData(receivedData, saeState);
         }
 
         void OnSocketSessionClosed(ISocketSession socketSession, CloseReason closeReason)
@@ -192,7 +215,7 @@ namespace SuperSocket.SocketEngine
 
         protected override ISocketListener CreateListener(ListenerInfo listenerInfo)
         {
-            return new UdpSocketListener(listenerInfo);
+            return new UdpSocketListener(listenerInfo, SaePool);
         }
 
         public override void ResetSessionSecurity(IAppSession session, System.Security.Authentication.SslProtocols security)

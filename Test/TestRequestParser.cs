@@ -2,28 +2,28 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
-using SuperSocket.SocketBase.Protocol;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase.Command;
 
 namespace SuperSocket.Test
 {
-    public class TestRequestParser : IRequestInfoParser<StringRequestInfo>
+    public class TestRequestParser : IStringParser
     {
-        #region ICommandParser Members
-
-        public StringRequestInfo ParseRequestInfo(string source)
+        public void Parse(string source, out string key, out string body, out string[] parameters)
         {
+            key = string.Empty;
+            body = string.Empty;
+            parameters = null;
+
             int pos = source.IndexOf(':');
 
-            if(pos <= 0)
-                return null;
+            if (pos <= 0)
+                return;
 
-            string param = source.Substring(pos + 1);
+            body = source.Substring(pos + 1);
 
-            return new StringRequestInfo(source.Substring(0, pos), param,
-                param.Split(new string[] { " " }, StringSplitOptions.RemoveEmptyEntries));
+            if (!string.IsNullOrEmpty(body))
+                parameters = body.Split(new string[] { " " }, StringSplitOptions.RemoveEmptyEntries);
         }
-
-        #endregion
     }
 }

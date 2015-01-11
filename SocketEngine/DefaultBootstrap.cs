@@ -4,12 +4,16 @@ using System.Configuration;
 using System.Diagnostics;
 using System.Linq;
 using System.Net;
+using System.Runtime.Remoting;
+using System.Runtime.Remoting.Channels;
+using System.Runtime.Remoting.Channels.Ipc;
 using System.Text;
 using System.Threading;
 using SuperSocket.Common;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Logging;
+using SuperSocket.SocketBase.Metadata;
 using SuperSocket.SocketBase.Provider;
 using SuperSocket.SocketEngine.Configuration;
 
@@ -18,7 +22,7 @@ namespace SuperSocket.SocketEngine
     /// <summary>
     /// SuperSocket default bootstrap
     /// </summary>
-    public class DefaultBootstrap : IBootstrap
+    public partial class DefaultBootstrap : IBootstrap, IDisposable
     {
         private List<IWorkItem> m_AppServers;
 
@@ -71,7 +75,30 @@ namespace SuperSocket.SocketEngine
         /// </summary>
         public string StartupConfigFile { get; private set; }
 
+        /// <summary>
+        /// Gets the <see cref="PerformanceMonitor"/> class.
+        /// </summary>
+        public IPerformanceMonitor PerfMonitor { get { return m_PerfMonitor; } }
+
         private PerformanceMonitor m_PerfMonitor;
+
+        private readonly string m_BaseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+
+        /// <summary>
+        /// Gets the base directory.
+        /// </summary>
+        /// <value>
+        /// The base directory.
+        /// </value>
+        public string BaseDirectory
+        {
+            get
+            {
+                return m_BaseDirectory;
+            }
+        }
+
+        partial void SetDefaultCulture(IRootConfig rootConfig);
 
         /// <summary>
         /// Initializes a new instance of the <see cref="DefaultBootstrap"/> class.
@@ -116,13 +143,17 @@ namespace SuperSocket.SocketEngine
 
             m_RootConfig = rootConfig;
 
+            SetDefaultCulture(rootConfig);
+
             m_AppServers = appServers.ToList();
 
             m_GlobalLog = logFactory.GetLog(this.GetType().Name);
 
+            AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+
             if (!rootConfig.DisablePerformanceDataCollector)
             {
-                m_PerfMonitor = new PerformanceMonitor(rootConfig, m_AppServers, logFactory);
+                m_PerfMonitor = new PerformanceMonitor(rootConfig, m_AppServers, null, logFactory);
 
                 if (m_GlobalLog.IsDebugEnabled)
                     m_GlobalLog.Debug("The PerformanceMonitor has been initialized!");
@@ -143,12 +174,16 @@ namespace SuperSocket.SocketEngine
             if (config == null)
                 throw new ArgumentNullException("config");
 
+            SetDefaultCulture(config);
+
             var fileConfigSource = config as ConfigurationSection;
 
             if (fileConfigSource != null)
                 StartupConfigFile = fileConfigSource.GetConfigSource();
 
             m_Config = config;
+
+            AppDomain.CurrentDomain.SetData("Bootstrap", this);
         }
 
         /// <summary>
@@ -161,18 +196,23 @@ namespace SuperSocket.SocketEngine
             if (config == null)
                 throw new ArgumentNullException("config");
 
+            SetDefaultCulture(config);
+
             if (!string.IsNullOrEmpty(startupConfigFile))
                 StartupConfigFile = startupConfigFile;
 
             m_Config = config;
+
+            AppDomain.CurrentDomain.SetData("Bootstrap", this);
         }
 
         /// <summary>
         /// Creates the work item instance.
         /// </summary>
         /// <param name="serviceTypeName">Name of the service type.</param>
+        /// <param name="serverStatusMetadata">The server status metadata.</param>
         /// <returns></returns>
-        protected virtual IWorkItem CreateWorkItemInstance(string serviceTypeName)
+        protected virtual IWorkItem CreateWorkItemInstance(string serviceTypeName, StatusInfoAttribute[] serverStatusMetadata)
         {
             var serviceType = Type.GetType(serviceTypeName, true);
             return Activator.CreateInstance(serviceType) as IWorkItem;
@@ -292,6 +332,8 @@ namespace SuperSocket.SocketEngine
                 LogFactory = logFactory;
                 m_GlobalLog = logFactory.GetLog(this.GetType().Name);
 
+                AppDomain.CurrentDomain.UnhandledException += new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+
                 try
                 {
                     workItemFactories = factoryInfoLoader.LoadResult(serverConfigResolver);
@@ -306,6 +348,9 @@ namespace SuperSocket.SocketEngine
             }
 
             m_AppServers = new List<IWorkItem>(m_Config.Servers.Count());
+
+            IWorkItem serverManager = null;
+
             //Initialize servers
             foreach (var factoryInfo in workItemFactories)
             {
@@ -313,7 +358,16 @@ namespace SuperSocket.SocketEngine
 
                 try
                 {
-                    appServer = CreateWorkItemInstance(factoryInfo.ServerType);
+                    appServer = CreateWorkItemInstance(factoryInfo.ServerType, factoryInfo.StatusInfoMetadata);
+
+                    if (factoryInfo.IsServerManager)
+                        serverManager = appServer;
+                    else if (!(appServer is IsolationAppServer))//No isolation
+                    {
+                        //In isolation mode, cannot check whether is server manager in the factory info loader
+                        if (TypeValidator.IsServerManagerType(appServer.GetType()))
+                            serverManager = appServer;
+                    }
 
                     if (m_GlobalLog.IsDebugEnabled)
                         m_GlobalLog.DebugFormat("The server instance {0} has been created!", factoryInfo.Config.Name);
@@ -324,6 +378,11 @@ namespace SuperSocket.SocketEngine
                         m_GlobalLog.Error(string.Format("Failed to create server instance {0}!", factoryInfo.Config.Name), e);
                     return false;
                 }
+
+                var exceptionSource = appServer as IExceptionSource;
+
+                if(exceptionSource != null)
+                    exceptionSource.ExceptionThrown += new EventHandler<ErrorEventArgs>(exceptionSource_ExceptionThrown);
 
 
                 var setupResult = false;
@@ -353,7 +412,7 @@ namespace SuperSocket.SocketEngine
 
             if (!m_Config.DisablePerformanceDataCollector)
             {
-                m_PerfMonitor = new PerformanceMonitor(m_Config, m_AppServers, logFactory);
+                m_PerfMonitor = new PerformanceMonitor(m_Config, m_AppServers, serverManager, logFactory);
 
                 if (m_GlobalLog.IsDebugEnabled)
                     m_GlobalLog.Debug("The PerformanceMonitor has been initialized!");
@@ -362,9 +421,31 @@ namespace SuperSocket.SocketEngine
             if (m_GlobalLog.IsDebugEnabled)
                 m_GlobalLog.Debug("The Bootstrap has been initialized!");
 
+            try
+            {
+                RegisterRemotingService();
+            }
+            catch (Exception e)
+            {
+                if (m_GlobalLog.IsErrorEnabled)
+                    m_GlobalLog.Error("Failed to register remoting access service!", e);
+
+                return false;
+            }
+
             m_Initialized = true;
 
             return true;
+        }
+
+        void exceptionSource_ExceptionThrown(object sender, ErrorEventArgs e)
+        {
+            m_GlobalLog.Error(string.Format("The server {0} threw an exception.", ((IWorkItemBase)sender).Name), e.Exception);
+        }
+
+        void CurrentDomain_UnhandledException(object sender, UnhandledExceptionEventArgs e)
+        {
+            m_GlobalLog.Error("The process crashed for an unhandled exception!", (Exception)e.ExceptionObject);
         }
 
         /// <summary>
@@ -480,6 +561,52 @@ namespace SuperSocket.SocketEngine
                 if (m_GlobalLog.IsDebugEnabled)
                     m_GlobalLog.Debug("The PerformanceMonitor has been stoppped!");
             }
+        }
+
+        /// <summary>
+        /// Registers the bootstrap remoting access service.
+        /// </summary>
+        protected virtual void RegisterRemotingService()
+        {
+            var bootstrapIpcPort = string.Format("SuperSocket.Bootstrap[{0}]", Math.Abs(AppDomain.CurrentDomain.BaseDirectory.TrimEnd(System.IO.Path.DirectorySeparatorChar).GetHashCode()));
+
+            var serverChannelName = "Bootstrap";
+
+            var serverChannel = ChannelServices.RegisteredChannels.FirstOrDefault(c => c.ChannelName == serverChannelName);
+
+            if (serverChannel != null)
+                ChannelServices.UnregisterChannel(serverChannel);
+
+            serverChannel = new IpcServerChannel(serverChannelName, bootstrapIpcPort);
+            ChannelServices.RegisterChannel(serverChannel, false);
+
+            AppDomain.CurrentDomain.SetData("BootstrapIpcPort", bootstrapIpcPort);
+
+            var bootstrapProxyType = typeof(RemoteBootstrapProxy);
+
+            if (!RemotingConfiguration.GetRegisteredWellKnownServiceTypes().Any(s => s.ObjectType == bootstrapProxyType))
+                RemotingConfiguration.RegisterWellKnownServiceType(bootstrapProxyType, "Bootstrap.rem", WellKnownObjectMode.Singleton);
+        }
+
+        /// <summary>
+        /// Releases unmanaged and - optionally - managed resources.
+        /// </summary>
+        /// <param name="disposing"><c>true</c> to release both managed and unmanaged resources; <c>false</c> to release only unmanaged resources.</param>
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                AppDomain.CurrentDomain.UnhandledException -= new UnhandledExceptionEventHandler(CurrentDomain_UnhandledException);
+            }
+        }
+
+        /// <summary>
+        /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
+        /// </summary>
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
         }
     }
 }

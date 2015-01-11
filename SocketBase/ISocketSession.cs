@@ -1,11 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
+using System.Linq;
 using System.Net;
-using System.Security.Authentication;
 using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Text;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase.Command;
 
 namespace SuperSocket.SocketBase
@@ -13,47 +14,52 @@ namespace SuperSocket.SocketBase
     /// <summary>
     /// CloseReason enum
     /// </summary>
-    public enum CloseReason
+    public enum CloseReason : int
     {
+        /// <summary>
+        /// The socket is closed for unknown reason
+        /// </summary>
+        Unknown = 0,
+
         /// <summary>
         /// Close for server shutdown
         /// </summary>
-        ServerShutdown,
+        ServerShutdown = 1,
 
         /// <summary>
         /// The client close the socket
         /// </summary>
-        ClientClosing,
+        ClientClosing = 2,
 
         /// <summary>
         /// The server side close the socket
         /// </summary>
-        ServerClosing,
+        ServerClosing = 3,
 
         /// <summary>
         /// Application error
         /// </summary>
-        ApplicationError,
+        ApplicationError = 4,
 
         /// <summary>
         /// The socket is closed for a socket error
         /// </summary>
-        SocketError,
+        SocketError = 5,
 
         /// <summary>
         /// The socket is closed by server for timeout
         /// </summary>
-        TimeOut,
+        TimeOut = 6,
 
         /// <summary>
         /// Protocol error 
         /// </summary>
-        ProtocolError,
+        ProtocolError = 7,
 
         /// <summary>
-        /// The socket is closed for unknown reason
+        /// SuperSocket internal error
         /// </summary>
-        Unknown
+        InternalError = 8,
     }
 
     /// <summary>
@@ -62,7 +68,7 @@ namespace SuperSocket.SocketBase
     public interface ISocketSession : ISessionBase
     {
         /// <summary>
-        /// Initializes the specified app session.
+        /// Initializes the socket session with the specified app session.
         /// </summary>
         /// <param name="appSession">The app session.</param>
         void Initialize(IAppSession appSession);
@@ -78,10 +84,18 @@ namespace SuperSocket.SocketBase
         /// <param name="reason">The reason.</param>
         void Close(CloseReason reason);
 
+
         /// <summary>
-        /// Starts the sending.
+        /// Tries to send array segment.
         /// </summary>
-        void StartSend();
+        /// <param name="segments">The segments.</param>
+        bool TrySend(IList<ArraySegment<byte>> segments);
+
+        /// <summary>
+        /// Tries to send array segment.
+        /// </summary>
+        /// <param name="segment">The segment.</param>
+        bool TrySend(ArraySegment<byte> segment);
 
         /// <summary>
         /// Applies the secure protocol.
@@ -115,5 +129,13 @@ namespace SuperSocket.SocketBase
         /// Gets the app session assosiated with this socket session.
         /// </summary>
         IAppSession AppSession { get; }
+
+        /// <summary>
+        /// Gets the pipeline processor.
+        /// </summary>
+        /// <value>
+        /// The pipeline processor.
+        /// </value>
+        IPipelineProcessor PipelineProcessor { get; }
     }
 }

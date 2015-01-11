@@ -1,8 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text;
+using System.Threading.Tasks;
+using SuperSocket.Common;
 using SuperSocket.Dlr;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Config;
@@ -29,15 +33,31 @@ namespace SuperSocket.Test
 
         }
 
-        public TestServer(IRequestInfoParser<StringRequestInfo> requestInfoParser)
-            : base(new CommandLineReceiveFilterFactory(Encoding.UTF8, requestInfoParser))
+        public TestServer(IStringParser stringParser)
+            : base(new CommandLineReceiveFilterFactory(Encoding.UTF8, stringParser))
         {
             
         }
 
-        void ITestSetup.Setup(IRootConfig rootConfig, IServerConfig serverConfig)
+        protected override bool Setup(IRootConfig rootConfig, IServerConfig serverConfig)
         {
+            var sendWelcome = true;
+            bool.TryParse(serverConfig.Options.GetValue("sendWelcome", "true"), out sendWelcome);
+            SendWelcome = sendWelcome;
+            return true;
+        }
+
+        void ITestSetup.Setup(IRootConfig rootConfig, IServerConfig serverConfig)
+        {            
             base.Setup(rootConfig, serverConfig, null, null, new ConsoleLogFactory(), null);
+        }
+
+        internal bool SendWelcome { get; private set; }
+
+        public Task<ActiveConnectResult> ActiveConnectRemote(EndPoint targetEndPoint)
+        {
+            var activeConnector = this as IActiveConnector;
+            return activeConnector.ActiveConnect(targetEndPoint);
         }
     }
 }

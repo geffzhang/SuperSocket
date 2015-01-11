@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Security.Cryptography.X509Certificates;
 
 namespace SuperSocket.SocketBase.Config
 {
@@ -31,5 +32,28 @@ namespace SuperSocket.SocketBase.Config
         /// Gets the thumbprint.
         /// </summary>
         string Thumbprint { get; }
+
+
+        /// <summary>
+        /// Gets the store location of the certificate.
+        /// </summary>
+        /// <value>
+        /// The store location.
+        /// </value>
+        StoreLocation StoreLocation { get; }
+
+
+        /// <summary>
+        /// Gets a value indicating whether [client certificate required].
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if [client certificate required]; otherwise, <c>false</c>.
+        /// </value>
+        bool ClientCertificateRequired { get; }
+
+        /// <summary>
+        /// Gets a value that will be used to instantiate the X509Certificate2 object in the CertificateManager
+        /// </summary>
+        X509KeyStorageFlags KeyStorageFlags { get; }
     }
 }

@@ -1,17 +1,18 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using SuperSocket.SocketBase;
-using SuperSocket.SocketBase.Config;
-using SuperSocket.Common;
-using System.Net;
-using System.IO;
-using System.Net.Sockets;
-using System.Threading.Tasks;
-using System.Threading;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using SuperSocket.Common;
+using SuperSocket.ProtoBase;
+using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
+using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Protocol;
 
 namespace SuperSocket.Facility.PolicyServer
@@ -19,7 +20,7 @@ namespace SuperSocket.Facility.PolicyServer
     /// <summary>
     /// PolicyServer base class
     /// </summary>
-    public abstract class PolicyServer : AppServer<PolicySession, BinaryRequestInfo>
+    public abstract class PolicyServer : AppServer<PolicySession, StringPackageInfo>
     {
         private string m_PolicyFile;
         private string m_PolicyRequest = "<policy-file-request/>";
@@ -63,7 +64,7 @@ namespace SuperSocket.Facility.PolicyServer
             }
 
             if (!Path.IsPathRooted(m_PolicyFile))
-                m_PolicyFile = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, m_PolicyFile);
+                m_PolicyFile = GetFilePath(m_PolicyFile);
 
             if (!File.Exists(m_PolicyFile))
             {
@@ -74,7 +75,7 @@ namespace SuperSocket.Facility.PolicyServer
 
             PolicyResponse = SetupPolicyResponse(File.ReadAllBytes(m_PolicyFile));
 
-            this.NewRequestReceived += new RequestHandler<PolicySession, BinaryRequestInfo>(PolicyServer_NewRequestReceived);
+            this.NewRequestReceived += new RequestHandler<PolicySession, StringPackageInfo>(PolicyServer_NewRequestReceived);
 
             return true;
         }
@@ -99,7 +100,7 @@ namespace SuperSocket.Facility.PolicyServer
             return PolicyResponse;
         }
 
-        void PolicyServer_NewRequestReceived(PolicySession session, BinaryRequestInfo requestInfo)
+        void PolicyServer_NewRequestReceived(PolicySession session, StringPackageInfo requestInfo)
         {
             ProcessRequest(session, requestInfo.Body);
         }
@@ -108,11 +109,9 @@ namespace SuperSocket.Facility.PolicyServer
         /// Processes the request.
         /// </summary>
         /// <param name="session">The session.</param>
-        /// <param name="data">The data.</param>
-        protected virtual void ProcessRequest(PolicySession session, byte[] data)
+        /// <param name="request">The request.</param>
+        protected virtual void ProcessRequest(PolicySession session, string request)
         {
-            var request = Encoding.UTF8.GetString(data);
-
             if (string.Compare(request, m_PolicyRequest, StringComparison.InvariantCultureIgnoreCase) != 0)
             {
                 session.Close();

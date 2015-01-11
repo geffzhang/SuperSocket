@@ -50,12 +50,6 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <DocumentationFile>bin\Release\SuperSocket.SocketBase.XML</DocumentationFile>
   </PropertyGroup>
-  <PropertyGroup>
-    <SignAssembly>true</SignAssembly>
-  </PropertyGroup>
-  <PropertyGroup>
-    <AssemblyOriginatorKeyFile>..\supersocket.snk</AssemblyOriginatorKeyFile>
-  </PropertyGroup>
   <ItemGroup>
     <Reference Include="log4net">
       <HintPath>..\Reference\log4net.dll</HintPath>
@@ -71,9 +65,22 @@
     <Compile Include="..\Solution Items\GlobalAssemblyInfo.cs">
       <Link>GlobalAssemblyInfo.cs</Link>
     </Compile>
+    <Compile Include="AppContext.cs" />
     <Compile Include="Async.cs" />
     <Compile Include="CommandExecutingContext.cs" />
-    <Compile Include="CommandFilterAttribute.cs" />
+    <Compile Include="Command\ICommandFilterProvider.cs" />
+    <Compile Include="Config\BufferPoolConfig.cs" />
+    <Compile Include="Config\IBufferPoolConfig.cs" />
+    <Compile Include="DictionarySessionContainer.cs" />
+    <Compile Include="IActiveConnector.cs" />
+    <Compile Include="INewSessionHandler.cs" />
+    <Compile Include="ISessionContainer.cs" />
+    <Compile Include="IStatusInfoSource.cs" />
+    <Compile Include="ISystemEndPoint.cs" />
+    <Compile Include="Logging\LocationInfo.cs" />
+    <Compile Include="Logging\LoggingData.cs" />
+    <Compile Include="Metadata\CommandAttribute.cs" />
+    <Compile Include="Metadata\CommandFilterAttribute.cs" />
     <Compile Include="Command\CommandLoaderBase.cs" />
     <Compile Include="Command\CommandInfo.cs" />
     <Compile Include="Command\CommandUpdateEventArgs.cs" />
@@ -85,10 +92,9 @@
     <Compile Include="Config\TypeProvider.cs" />
     <Compile Include="Config\TypeProviderCollection.cs" />
     <Compile Include="Config\TypeProviderConfig.cs" />
-    <Compile Include="DisplayAttribute.cs" />
     <Compile Include="Extensions.cs" />
     <Compile Include="IWorkItem.cs" />
-    <Compile Include="NodeSummary.cs" />
+    <Compile Include="Metadata\StatusInfoAttribute.cs" />
     <Compile Include="IBootstrap.cs" />
     <Compile Include="ILoggerProvider.cs" />
     <Compile Include="IsolationMode.cs" />
@@ -99,7 +105,22 @@
     <Compile Include="Logging\Log4NetLog.cs" />
     <Compile Include="Logging\Log4NetLogFactory.cs" />
     <Compile Include="Logging\LogFactoryBase.cs" />
-    <Compile Include="Protocol\IOffsetAdapter.cs" />
+    <Compile Include="Metadata\DefaultAppServerMetadata.cs" />
+    <Compile Include="Metadata\AppServerMetadataTypeAttribute.cs" />
+    <Compile Include="NodeStatus.cs" />
+    <Compile Include="Pool\BufferItemCreator.cs" />
+    <Compile Include="Pool\BufferManager.cs" />
+    <Compile Include="Pool\BufferPool.cs" />
+    <Compile Include="Pool\IBufferManager.cs" />
+    <Compile Include="Pool\IBufferPool.cs" />
+    <Compile Include="Pool\IntelliPool.cs" />
+    <Compile Include="Pool\IPool.cs" />
+    <Compile Include="Pool\IPoolItemCreator.cs" />
+    <Compile Include="Pool\NullBufferManager.cs" />
+    <Compile Include="ProtocolMode.cs" />
+    <Compile Include="Protocol\CountSpliterReceiveFilter.cs" />
+    <Compile Include="Protocol\CountSpliterReceiveFilterFactory.cs" />
+    <Compile Include="Protocol\TerminatorReceiveFilter.cs" />
     <Compile Include="Protocol\TerminatorReceiveFilterFactory.cs" />
     <Compile Include="Provider\ExportFactory.cs" />
     <Compile Include="Provider\ProviderFactoryInfo.cs" />
@@ -108,7 +129,6 @@
     <Compile Include="Config\IListenerConfig.cs" />
     <Compile Include="Config\ListenerConfig.cs" />
     <Compile Include="ListenerInfo.cs" />
-    <Compile Include="Protocol\BinaryRequestInfo.cs" />
     <Compile Include="Command\CommandBase.cs" />
     <Compile Include="Command\CommandUpdateInfo.cs" />
     <Compile Include="Command\ICommand.cs" />
@@ -116,20 +136,14 @@
     <Compile Include="Protocol\CommandLineReceiveFilterFactory.cs" />
     <Compile Include="Protocol\DefaultReceiveFilterFactory.cs" />
     <Compile Include="Protocol\IReceiveFilterFactory.cs" />
-    <Compile Include="Protocol\IRequestInfo.cs" />
-    <Compile Include="Protocol\ReceiveFilterBase.cs" />
-    <Compile Include="Protocol\RequestInfo.cs" />
-    <Compile Include="Protocol\StringRequestInfo.cs" />
     <Compile Include="Command\ReflectCommandLoader.cs" />
-    <Compile Include="Protocol\TerminatorReceiveFilter.cs" />
-    <Compile Include="Protocol\UdpRequestInfo.cs" />
+    <Compile Include="Protocol\UdpPackageInfo.cs" />
     <Compile Include="Config\CertificateConfig.cs" />
     <Compile Include="Config\ICertificateConfig.cs" />
     <Compile Include="Config\IRootConfig.cs" />
     <Compile Include="Config\IServerConfig.cs" />
     <Compile Include="Config\RootConfig.cs" />
     <Compile Include="Config\ServerConfig.cs" />
-    <Compile Include="Protocol\IReceiveFilter.cs" />
     <Compile Include="IAppServer.cs" />
     <Compile Include="IAppSession.cs" />
     <Compile Include="IConnectionFilter.cs" />
@@ -139,22 +153,37 @@
     <Compile Include="ISocketSession.cs" />
     <Compile Include="LoggerExtension.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
-    <Compile Include="Protocol\BasicRequestInfoParser.cs" />
-    <Compile Include="Protocol\IRequestInfoParser.cs" />
+    <Compile Include="RequestHandlingMode.cs" />
     <Compile Include="Security\CertificateManager.cs" />
+    <Compile Include="ServerResource\BufferManagerResource.cs" />
+    <Compile Include="ServerResource\RequestExecutingContextPoolResource.cs" />
+    <Compile Include="ServerResource\RequestHandlingSchedulerResource.cs" />
+    <Compile Include="ServerResource\ServerResourceItem.cs" />
     <Compile Include="ServerState.cs" />
-    <Compile Include="ServerSummary.cs" />
+    <Compile Include="Metadata\StatusInfoKeys.cs" />
     <Compile Include="SessionHandler.cs" />
+    <Compile Include="Scheduler\SingleThreadTaskScheduler.cs" />
     <Compile Include="SocketMode.cs" />
     <Compile Include="AppServer.cs" />
     <Compile Include="AppServerBase.cs" />
     <Compile Include="AppSession.cs" />
     <Compile Include="Command\StringCommandBase.cs" />
+    <Compile Include="StatusInfoCollection.cs" />
+    <Compile Include="Scheduler\CustomThreadPoolTaskScheduler.cs" />
+    <Compile Include="Utils\ITransactionGroup.cs" />
+    <Compile Include="Utils\ITransactionItem.cs" />
+    <Compile Include="Utils\LightweightTransaction.cs" />
+    <Compile Include="Utils\SendingQueue.cs" />
+    <Compile Include="Utils\SendingQueueSourceCreator.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Common\SuperSocket.Common.Net40.csproj">
       <Project>{A24F4D38-BA9C-4FD6-95B7-4980DE36131A}</Project>
       <Name>SuperSocket.Common.Net40</Name>
+    </ProjectReference>
+    <ProjectReference Include="..\ProtoBase\SuperSocket.ProtoBase.Net40.csproj">
+      <Project>{88C9312E-7520-4F6B-BF25-30DA5990D270}</Project>
+      <Name>SuperSocket.ProtoBase.Net40</Name>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
@@ -179,6 +208,7 @@
       <Install>true</Install>
     </BootstrapperPackage>
   </ItemGroup>
+  <ItemGroup />
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.

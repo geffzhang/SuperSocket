@@ -1,15 +1,18 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using SuperSocket.Common;
-using SuperSocket.SocketBase.Logging;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Config;
+using SuperSocket.SocketBase.Logging;
+using SuperSocket.SocketBase.Pool;
 using SuperSocket.SocketBase.Protocol;
-using System.Collections;
 using SuperSocket.SocketBase.Provider;
 
 namespace SuperSocket.SocketBase
@@ -17,7 +20,7 @@ namespace SuperSocket.SocketBase
     /// <summary>
     /// The interface for AppServer
     /// </summary>
-    public interface IAppServer : IWorkItem, ILoggerProvider
+    public interface IAppServer : IWorkItem, ILoggerProvider, IServiceProvider
     {
         /// <summary>
         /// Gets the started time.
@@ -40,7 +43,7 @@ namespace SuperSocket.SocketBase
         /// Gets the Receive filter factory.
         /// </summary>
         object ReceiveFilterFactory { get; }
-        
+
 
         /// <summary>
         /// Gets the server's config.
@@ -64,12 +67,20 @@ namespace SuperSocket.SocketBase
         /// <returns></returns>
         IAppSession CreateAppSession(ISocketSession socketSession);
 
+
+        /// <summary>
+        /// Registers the new created app session into the appserver's session container.
+        /// </summary>
+        /// <param name="session">The session.</param>
+        /// <returns></returns>
+        bool RegisterSession(IAppSession session);
+
         /// <summary>
         /// Gets the app session by ID.
         /// </summary>
         /// <param name="sessionID">The session ID.</param>
         /// <returns></returns>
-        IAppSession GetAppSessionByID(string sessionID);
+        IAppSession GetSessionByID(string sessionID);
 
         /// <summary>
         /// Resets the session's security protocol.
@@ -82,6 +93,35 @@ namespace SuperSocket.SocketBase
         /// Gets the log factory.
         /// </summary>
         ILogFactory LogFactory { get; }
+
+
+        /// <summary>
+        /// Gets the buffer manager.
+        /// </summary>
+        /// <value>
+        /// The buffer manager.
+        /// </value>
+        IBufferManager BufferManager { get; }
+
+        /// <summary>
+        /// Gets the service object of the specified type.
+        /// </summary>
+        /// <typeparam name="T">the type of service object to get</typeparam>
+        /// <returns>A service object of type T</returns>
+        T GetService<T>();
+
+        /// <summary>
+        /// Registers the service instance.
+        /// </summary>
+        /// <typeparam name="T">the service instance's type</typeparam>
+        /// <param name="serviceInstance">The service instance.</param>
+        void RegisterService<T>(T serviceInstance);
+
+
+        /// <summary>
+        /// Occurs when [new request received].
+        /// </summary>
+        event SessionHandler<IAppSession, IPackageInfo> NewRequestReceived;
     }
 
     /// <summary>
@@ -137,29 +177,60 @@ namespace SuperSocket.SocketBase
     /// The interface for AppServer
     /// </summary>
     /// <typeparam name="TAppSession">The type of the app session.</typeparam>
-    /// <typeparam name="TRequestInfo">The type of the request info.</typeparam>
-    public interface IAppServer<TAppSession, TRequestInfo> : IAppServer<TAppSession>
-        where TRequestInfo : IRequestInfo
-        where TAppSession : IAppSession, IAppSession<TAppSession, TRequestInfo>, new()
+    /// <typeparam name="TPackageInfo">The type of the request info.</typeparam>
+    public interface IAppServer<TAppSession, TPackageInfo> : IAppServer<TAppSession>
+        where TPackageInfo : IPackageInfo
+        where TAppSession : IAppSession, IAppSession<TAppSession, TPackageInfo>, new()
     {
         /// <summary>
         /// Occurs when [request comming].
         /// </summary>
-        event RequestHandler<TAppSession, TRequestInfo> NewRequestReceived;
+        new event RequestHandler<TAppSession, TPackageInfo> NewRequestReceived;
     }
 
     /// <summary>
     /// The interface for handler of session request
     /// </summary>
-    /// <typeparam name="TRequestInfo">The type of the request info.</typeparam>
-    public interface IRequestHandler<TRequestInfo>
-        where TRequestInfo : IRequestInfo
+    /// <typeparam name="TPackageInfo">The type of the request info.</typeparam>
+    public interface IRequestHandler<TPackageInfo>
+        where TPackageInfo : IPackageInfo
     {
         /// <summary>
         /// Executes the command.
         /// </summary>
         /// <param name="session">The session.</param>
         /// <param name="requestInfo">The request info.</param>
-        void ExecuteCommand(IAppSession session, TRequestInfo requestInfo);
+        void ExecuteCommand(IAppSession session, TPackageInfo requestInfo);
+    }
+
+    /// <summary>
+    /// SocketServer Accessor interface
+    /// </summary>
+    public interface ISocketServerAccessor
+    {
+        /// <summary>
+        /// Gets the socket server.
+        /// </summary>
+        /// <value>
+        /// The socket server.
+        /// </value>
+        ISocketServer SocketServer { get; }
+    }
+
+    /// <summary>
+    /// The basic interface for RemoteCertificateValidator
+    /// </summary>
+    public interface IRemoteCertificateValidator
+    {
+        /// <summary>
+        /// Validates the remote certificate
+        /// </summary>
+        /// <param name="session">The session.</param>
+        /// <param name="sender">The sender.</param>
+        /// <param name="certificate">The certificate.</param>
+        /// <param name="chain">The chain.</param>
+        /// <param name="sslPolicyErrors">The SSL policy errors.</param>
+        /// <returns></returns>
+        bool Validate(IAppSession session, object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors);
     }
 }

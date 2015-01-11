@@ -51,7 +51,18 @@ namespace SuperSocket.SocketEngine
 
         protected virtual void OnNewClientAccepted(Socket socket, object state)
         {
-            NewClientAccepted.BeginInvoke(this, socket, state, null, null);
+            var handler = NewClientAccepted;
+
+            if (handler != null)
+                handler(this, socket, state);
+        }
+
+        protected void OnNewClientAcceptedAsync(Socket socket, object state)
+        {
+            var handler = NewClientAccepted;
+
+            if (handler != null)
+                handler.BeginInvoke(this, socket, state, null, null);
         }
 
         /// <summary>

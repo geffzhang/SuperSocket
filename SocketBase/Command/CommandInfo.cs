@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using SuperSocket.SocketBase.Metadata;
 
 namespace SuperSocket.SocketBase.Command
 {
@@ -23,12 +24,11 @@ namespace SuperSocket.SocketBase.Command
                 allFilters.AddRange(globalFilters);
             }
 
-            var filters = AppServer.GetCommandFilterAttributes(command.GetType());
+            IEnumerable<CommandFilterAttribute> filters = command is ICommandFilterProvider ?
+                (command as ICommandFilterProvider).GetFilters() : AppServer.GetCommandFilterAttributes(command.GetType());
 
-            if (filters.Any())
-            {
+            if (filters != null && filters.Any())
                 allFilters.AddRange(filters);
-            }
 
             if (allFilters.Any())
             {

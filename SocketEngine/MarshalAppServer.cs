@@ -6,10 +6,11 @@ using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Provider;
 using SuperSocket.SocketBase.Config;
 using System.Reflection;
+using SuperSocket.SocketBase.Metadata;
 
 namespace SuperSocket.SocketEngine
 {
-    class MarshalAppServer : MarshalByRefObject, IWorkItem
+    class MarshalAppServer : MarshalByRefObject, IWorkItem, IStatusInfoSource
     {
         private IWorkItem m_AppServer;
 
@@ -81,15 +82,33 @@ namespace SuperSocket.SocketEngine
             get { return m_AppServer.SessionCount; }
         }
 
-
-        public ServerSummary Summary
+        StatusInfoAttribute[] IStatusInfoSource.GetServerStatusMetadata()
         {
-            get { return m_AppServer.Summary; }
+            return m_AppServer.GetServerStatusMetadata();
         }
 
-        ServerSummary IWorkItem.CollectServerSummary(NodeSummary nodeSummary)
+        StatusInfoCollection IStatusInfoSource.CollectServerStatus(StatusInfoCollection nodeStatus)
         {
-            return m_AppServer.CollectServerSummary(nodeSummary);   
+            return m_AppServer.CollectServerStatus(nodeStatus);
+        }
+
+        public void TransferSystemMessage(string messageType, object messageData)
+        {
+            m_AppServer.TransferSystemMessage(messageType, messageData);
+        }
+
+        /// <summary>
+        /// Obtains a lifetime service object to control the lifetime policy for this instance.
+        /// </summary>
+        /// <returns>
+        /// An object of type <see cref="T:System.Runtime.Remoting.Lifetime.ILease" /> used to control the lifetime policy for this instance. This is the current lifetime service object for this instance if one exists; otherwise, a new lifetime service object initialized to the value of the <see cref="P:System.Runtime.Remoting.Lifetime.LifetimeServices.LeaseManagerPollTime" /> property.
+        /// </returns>
+        /// <PermissionSet>
+        ///   <IPermission class="System.Security.Permissions.SecurityPermission, mscorlib, Version=2.0.3600.0, Culture=neutral, PublicKeyToken=b77a5c561934e089" version="1" Flags="RemotingConfiguration, Infrastructure" />
+        ///   </PermissionSet>
+        public override object InitializeLifetimeService()
+        {
+            return null;
         }
     }
 }

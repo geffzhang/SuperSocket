@@ -19,6 +19,8 @@ namespace SuperSocket.SocketEngine
 
         private Socket m_ListenSocket;
 
+        private SocketAsyncEventArgs m_AcceptEventArgs;
+
         public TcpAsyncSocketListener(ListenerInfo info)
             : base(info)
         {
@@ -42,7 +44,8 @@ namespace SuperSocket.SocketEngine
                 m_ListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
                 m_ListenSocket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.DontLinger, true);
 
-                SocketAsyncEventArgs acceptEventArg = new SocketAsyncEventArgs();
+                var acceptEventArg = new SocketAsyncEventArgs();
+                m_AcceptEventArgs = acceptEventArg;
                 acceptEventArg.Completed += new EventHandler<SocketAsyncEventArgs>(acceptEventArg_Completed);
 
                 if (!m_ListenSocket.AcceptAsync(acceptEventArg))
@@ -66,13 +69,22 @@ namespace SuperSocket.SocketEngine
 
         void ProcessAccept(SocketAsyncEventArgs e)
         {
+            Socket socket = null;
+
             if (e.SocketError != SocketError.Success)
             {
-                OnError(new SocketException((int)e.SocketError));
-                return;
-            }
+                var errorCode = (int)e.SocketError;
 
-            OnNewClientAccepted(e.AcceptSocket, null);
+                //The listen socket was closed
+                if (errorCode == 995 || errorCode == 10004 || errorCode == 10038)
+                    return;
+
+                OnError(new SocketException(errorCode));
+            }
+            else
+            {
+                socket = e.AcceptSocket;
+            }
 
             e.AcceptSocket = null;
 
@@ -82,11 +94,29 @@ namespace SuperSocket.SocketEngine
             {
                 willRaiseEvent = m_ListenSocket.AcceptAsync(e);
             }
+            catch (ObjectDisposedException)
+            {
+                //The listener was stopped
+                //Do nothing
+                //make sure ProcessAccept won't be executed in this thread
+                willRaiseEvent = true;
+            }
+            catch (NullReferenceException)
+            {
+                //The listener was stopped
+                //Do nothing
+                //make sure ProcessAccept won't be executed in this thread
+                willRaiseEvent = true;
+            }
             catch (Exception exc)
             {
                 OnError(exc);
-                return;
+                //make sure ProcessAccept won't be executed in this thread
+                willRaiseEvent = true;
             }
+
+            if (socket != null)
+                OnNewClientAccepted(socket, null);
 
             if (!willRaiseEvent)
                 ProcessAccept(e);
@@ -101,6 +131,13 @@ namespace SuperSocket.SocketEngine
             {
                 if (m_ListenSocket == null)
                     return;
+
+                if (m_AcceptEventArgs != null)
+                {
+                    m_AcceptEventArgs.Completed -= new EventHandler<SocketAsyncEventArgs>(acceptEventArg_Completed);
+                    m_AcceptEventArgs.Dispose();
+                    m_AcceptEventArgs = null;
+                }
 
                 try
                 {

@@ -13,7 +13,7 @@ namespace SuperSocket.SocketBase.Config
     /// Server configruation model
     /// </summary>
     [Serializable]
-    public class ServerConfig : IServerConfig
+    public partial class ServerConfig : IServerConfig
     {
         /// <summary>
         /// Default ReceiveBufferSize
@@ -25,10 +25,44 @@ namespace SuperSocket.SocketBase.Config
         /// </summary>
         public const int DefaultMaxConnectionNumber = 100;
 
+
+        /// <summary>
+        /// Default sending queue size
+        /// </summary>
+        public const int DefaultSendingQueueSize = 5;
+
         /// <summary>
         /// Default MaxRequestLength
         /// </summary>
         public const int DefaultMaxRequestLength = 1024;
+
+
+        /// <summary>
+        /// Default send timeout value, in milliseconds
+        /// </summary>
+        public const int DefaultSendTimeout = 5000;
+
+
+        /// <summary>
+        /// Default clear idle session interval
+        /// </summary>
+        public const int DefaultClearIdleSessionInterval = 120;
+
+
+        /// <summary>
+        /// Default idle session timeout
+        /// </summary>
+        public const int DefaultIdleSessionTimeOut = 300;
+
+        /// <summary>
+        /// The default min request handling threads
+        /// </summary>
+        public const int DefaultMinRequestHandlingThreads = 1;
+
+        /// <summary>
+        /// The default max request handling threads
+        /// </summary>
+        public const int DefaultMaxRequestHandlingThreads = 5;
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ServerConfig"/> class.
@@ -42,16 +76,21 @@ namespace SuperSocket.SocketBase.Config
             this.OptionElements = serverConfig.OptionElements;
 
             if (serverConfig.Certificate != null)
-                this.Certificate = serverConfig.Certificate.CopyPropertiesTo(new CertificateConfig());
+                this.Certificate = serverConfig.Certificate.MakeCopy<CertificateConfig>();
 
             if (serverConfig.Listeners != null && serverConfig.Listeners.Any())
             {
-                this.Listeners = serverConfig.Listeners.Select(l => l.CopyPropertiesTo(new ListenerConfig()));
+                this.Listeners = serverConfig.Listeners.MakeCopy<ListenerConfig>();
             }
 
             if (serverConfig.CommandAssemblies != null && serverConfig.CommandAssemblies.Any())
             {
-                this.CommandAssemblies = serverConfig.CommandAssemblies.Select(c => c.CopyPropertiesTo(new CommandAssemblyConfig()));
+                this.CommandAssemblies = serverConfig.CommandAssemblies.MakeCopy<CommandAssemblyConfig>();
+            }
+
+            if (serverConfig.BufferPools != null && serverConfig.BufferPools.Any())
+            {
+                this.BufferPools = serverConfig.BufferPools.MakeCopy<BufferPoolConfig>();
             }
         }
 
@@ -68,6 +107,12 @@ namespace SuperSocket.SocketBase.Config
             KeepAliveInterval = 60;// 60 seconds
             ListenBacklog = 100;
             ReceiveBufferSize = DefaultReceiveBufferSize;
+            SendingQueueSize = DefaultSendingQueueSize;
+            SendTimeOut = DefaultSendTimeout;
+            ClearIdleSessionInterval = DefaultClearIdleSessionInterval;
+            IdleSessionTimeOut = DefaultIdleSessionTimeOut;
+            MinRequestHandlingThreads = DefaultMinRequestHandlingThreads;
+            MaxRequestHandlingThreads = DefaultMaxRequestHandlingThreads;
         }
 
         #region IServerConfig Members
@@ -88,6 +133,14 @@ namespace SuperSocket.SocketBase.Config
         /// The type of the server.
         /// </value>
         public string ServerType { get; set; }
+
+        /// <summary>
+        /// Gets/sets the protocol the server instance want to use.
+        /// </summary>
+        /// <value>
+        /// The protocol  the server instance want to use.
+        /// </value>
+        public ProtocolMode Protocol { get; set; }
 
         /// <summary>
         /// Gets/sets the Receive filter factory.
@@ -313,12 +366,52 @@ namespace SuperSocket.SocketBase.Config
         public bool LogAllSocketException { get; set; }
 
         /// <summary>
+        /// Gets/sets the default text encoding.
+        /// </summary>
+        /// <value>
+        /// The text encoding.
+        /// </value>
+        public string TextEncoding { get; set; }
+
+        /// <summary>
+        /// Gets/sets the request handling mode.
+        /// </summary>
+        /// <value>
+        /// The request handling mode.
+        /// </value>
+        public RequestHandlingMode RequestHandlingMode { get; set; }
+
+        /// <summary>
+        /// Gets the minimum count of request handling threads.
+        /// </summary>
+        /// <value>
+        /// Gets the minimum count of request handling threads.
+        /// </value>
+        public int MinRequestHandlingThreads { get; set; }
+
+        /// <summary>
+        /// Gets the maximum request handling threads count.
+        /// </summary>
+        /// <value>
+        /// The maximum request handling threads count.
+        /// </value>
+        public int MaxRequestHandlingThreads { get; set; }
+
+        /// <summary>
         /// Gets the command assemblies configuration.
         /// </summary>
         /// <value>
         /// The command assemblies.
         /// </value>
         public IEnumerable<ICommandAssemblyConfig> CommandAssemblies { get; set; }
+
+        /// <summary>
+        /// Gets/sets the buffer pools configuration.
+        /// </summary>
+        /// <value>
+        /// The buffer pools configuration.
+        /// </value>
+        public IEnumerable<IBufferPoolConfig> BufferPools { get; set; }
 
         #endregion
     }

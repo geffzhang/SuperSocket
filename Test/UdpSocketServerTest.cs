@@ -6,20 +6,21 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using NUnit.Framework;
 using SuperSocket.Common;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Config;
-using SuperSocket.SocketBase.Protocol;
+using SuperSocket.SocketBase.Logging;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketEngine;
 using SuperSocket.Test.Udp;
-using SuperSocket.SocketBase.Logging;
-using System.Threading.Tasks;
+using SuperSocket.SocketBase.Protocol;
 
 namespace SuperSocket.Test
 {
-    public class MyUdpRequestInfo : UdpRequestInfo
+    public class MyUdpRequestInfo : UdpPackageInfo<string>
     {
         public MyUdpRequestInfo(string key, string sessionID)
             : base(key, sessionID)
@@ -37,10 +38,11 @@ namespace SuperSocket.Test
             data.AddRange(Encoding.ASCII.GetBytes(SessionID));
 
             int expectedLen = 36 + 4;
+            int maxLen = expectedLen - data.Count;
 
-            if (data.Count < expectedLen)
+            if (maxLen > 0)
             {
-                for (var i = 0; i < expectedLen - data.Count; i++)
+                for (var i = 0; i < maxLen; i++)
                 {
                     data.Add(0x00);
                 }
@@ -60,6 +62,8 @@ namespace SuperSocket.Test
         private IRootConfig m_RootConfig;
         private Encoding m_Encoding;
 
+		private string m_NewLine = "\r\n";
+
         protected IServerConfig DefaultServerConfig
         {
             get
@@ -68,7 +72,7 @@ namespace SuperSocket.Test
                     {
                         Ip = "127.0.0.1",
                         LogCommand = true,
-                        MaxConnectionNumber = 100,
+                        MaxConnectionNumber = 1000,
                         Mode = SocketMode.Udp,
                         Name = "Udp Test Socket Server",
                         Port = 2196,
@@ -151,7 +155,7 @@ namespace SuperSocket.Test
                     sb.Append(chars[rd.Next(0, chars.Length - 1)]);
                     string command = sb.ToString();
                     Console.WriteLine("Client prepare sent:" + command);
-                    socket.SendTo(m_Encoding.GetBytes("ECHO " + command + Environment.NewLine), serverAddress);
+                    socket.SendTo(m_Encoding.GetBytes("ECHO " + command + m_NewLine), serverAddress);
                     Console.WriteLine("Client sent:" + command);
                     string echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
                     Console.WriteLine("C:" + echoMessage);
@@ -231,7 +235,7 @@ namespace SuperSocket.Test
                         sb.Append(chars[rd.Next(0, chars.Length - 1)]);
                         string command = sb.ToString();
                         source.Add(command);
-                        sbCombile.AppendLine("ECHO " + command);
+                        sbCombile.Append("ECHO " + command + m_NewLine);
                     }
 
                     socket.SendTo(m_Encoding.GetBytes(sbCombile.ToString()), serverAddress);                    
@@ -266,8 +270,18 @@ namespace SuperSocket.Test
                     sb.Append(chars[rd.Next(0, chars.Length - 1)]);
                     string command = sb.ToString();
 
-                    socket.SendTo(m_Encoding.GetBytes("ECHO " + command + Environment.NewLine), serverAddress);
-                    string echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
+                    socket.SendTo(m_Encoding.GetBytes("ECHO " + command + m_NewLine), serverAddress);
+                    string echoMessage = string.Empty;
+
+                    try
+                    {
+                        echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
+                    }
+                    catch
+                    {
+                        return false;
+                    }
+
                     if (!string.Equals(command, echoMessage))
                     {
                         Console.WriteLine("Incorrect response: {0}, {1}", command, echoMessage);
@@ -320,7 +334,7 @@ namespace SuperSocket.Test
                 {
                     string commandName = Guid.NewGuid().ToString().Substring(0, 3);
                     string command = commandName + " " + DateTime.Now;
-                    socket.SendTo(m_Encoding.GetBytes(command + Environment.NewLine), serverAddress);
+                    socket.SendTo(m_Encoding.GetBytes(command + m_NewLine), serverAddress);
                     string line = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
                     Console.WriteLine(line);
                     Assert.AreEqual(string.Format(TestSession.UnknownCommandMessageFormat, commandName), line);
@@ -338,7 +352,7 @@ namespace SuperSocket.Test
             using (Socket socket = CreateClientSocket())
             {
                 string param = Guid.NewGuid().ToString();
-                string command = "325 " + param + Environment.NewLine;
+                string command = "325 " + param + m_NewLine;
                 socket.SendTo(m_Encoding.GetBytes(command), serverAddress);
                 string echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
                 Console.WriteLine("C:" + echoMessage);
@@ -361,7 +375,7 @@ namespace SuperSocket.Test
                 using (Socket socket = CreateClientSocket())
                 {
                     string command = string.Format("Hello World ({0})!", Guid.NewGuid().ToString());
-                    socket.SendTo(m_Encoding.GetBytes("ECHO:" + command + Environment.NewLine), serverAddress);
+                    socket.SendTo(m_Encoding.GetBytes("ECHO:" + command + m_NewLine), serverAddress);
                     string echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
                     Assert.AreEqual(command, echoMessage);
                 }
@@ -405,17 +419,24 @@ namespace SuperSocket.Test
                 for (int i = 0; i < maxConnectionNumber; i++)
                 {
                     Socket socket = CreateClientSocket();
-                    socket.SendTo(m_Encoding.GetBytes(Guid.NewGuid().ToString() + Environment.NewLine), serverAddress);
+                    socket.SendTo(m_Encoding.GetBytes(Guid.NewGuid().ToString() + m_NewLine), serverAddress);
                     Console.WriteLine("C: " + m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray()));
                     sockets.Add(socket);
                 }
 
                 using (Socket trySocket = CreateClientSocket())
                 {
-                    trySocket.SendTo(m_Encoding.GetBytes(Guid.NewGuid().ToString() + Environment.NewLine), serverAddress);
+                    trySocket.SendTo(m_Encoding.GetBytes(Guid.NewGuid().ToString() + m_NewLine), serverAddress);
                     Thread thread = new Thread(new ThreadStart(() =>
                         {
-                            Console.WriteLine("C: " + m_Encoding.GetString(ReceiveMessage(trySocket, serverAddress).ToArray()));
+                            try
+                            {
+                                Console.WriteLine("C: " + m_Encoding.GetString(ReceiveMessage(trySocket, serverAddress).ToArray()));
+                            }
+                            catch
+                            {
+
+                            }
                         }));
                     thread.Start();
                     if (thread.Join(500))
@@ -460,7 +481,7 @@ namespace SuperSocket.Test
             using (Socket socket = CreateClientSocket())
             {
                 string param = Guid.NewGuid().ToString();
-                string command = "325 " + param + Environment.NewLine;
+                string command = "325 " + param + m_NewLine;
                 socket.SendTo(m_Encoding.GetBytes(command), serverAddress);
                 string echoMessage = m_Encoding.GetString(ReceiveMessage(socket, serverAddress).ToArray());
                 Console.WriteLine("C:" + echoMessage);

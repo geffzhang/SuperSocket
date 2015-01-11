@@ -4,6 +4,8 @@ using System.Linq;
 using System.Text;
 using System.IO;
 using System.Diagnostics;
+using log4net.Repository;
+using System.Collections.Concurrent;
 
 namespace SuperSocket.SocketBase.Logging
 {
@@ -18,11 +20,8 @@ namespace SuperSocket.SocketBase.Logging
         protected string ConfigFile { get; private set; }
 
         /// <summary>
-        /// Gets a value indicating whether this instance is isolated.
+        /// Gets a value indicating whether the server instance is running in isolation mode and the multiple server instances share the same logging configuration.
         /// </summary>
-        /// <value>
-        /// <c>true</c> if this instance is isolated; otherwise, <c>false</c>.
-        /// </value>
         protected bool IsSharedConfig { get; private set; }
 
         /// <summary>
@@ -42,7 +41,15 @@ namespace SuperSocket.SocketBase.Logging
                 configFile = Path.GetFileNameWithoutExtension(configFile) + ".unix" + Path.GetExtension(configFile);
             }
 
-            if (AppDomain.CurrentDomain.IsDefaultAppDomain())
+            var currentAppDomain = AppDomain.CurrentDomain;
+            var isolation = IsolationMode.None;
+
+            var isolationValue = currentAppDomain.GetData(typeof(IsolationMode).Name);
+
+            if (isolationValue != null)
+                isolation = (IsolationMode)isolationValue;
+
+            if (isolation == IsolationMode.None)
             {
                 var filePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, configFile);
 
@@ -129,5 +136,14 @@ namespace SuperSocket.SocketBase.Logging
         /// <param name="name">The name.</param>
         /// <returns></returns>
         public abstract ILog GetLog(string name);
+
+        /// <summary>
+        /// Gets the log from the specific repository.
+        /// </summary>
+        /// <param name="repositoryName">Name of the repository.</param>
+        /// <param name="name">The name.</param>
+        /// <returns></returns>
+        /// <exception cref="System.NotImplementedException"></exception>
+        public abstract ILog GetLog(string repositoryName, string name);
     }
 }

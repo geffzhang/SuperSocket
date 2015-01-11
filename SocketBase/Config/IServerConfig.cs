@@ -10,7 +10,7 @@ namespace SuperSocket.SocketBase.Config
     /// <summary>
     /// Server instance configuation interface
     /// </summary>
-    public interface IServerConfig
+    public partial interface IServerConfig
     {
         /// <summary>
         /// Gets the name of the server type this appServer want to use.
@@ -27,6 +27,14 @@ namespace SuperSocket.SocketBase.Config
         /// The type of the server.
         /// </value>
         string ServerType { get; }
+
+        /// <summary>
+        /// Gets the protocol the server instance want to use.
+        /// </summary>
+        /// <value>
+        /// The protocol  the server instance want to use.
+        /// </value>
+        ProtocolMode Protocol { get; }
 
         /// <summary>
         /// Gets the Receive filter factory.
@@ -253,11 +261,54 @@ namespace SuperSocket.SocketBase.Config
 
 
         /// <summary>
+        /// Gets the default text encoding.
+        /// </summary>
+        /// <value>
+        /// The text encoding.
+        /// </value>
+        string TextEncoding { get; }
+
+
+        /// <summary>
+        /// Gets the request handling mode.
+        /// </summary>
+        /// <value>
+        /// The request handling mode.
+        /// </value>
+        RequestHandlingMode RequestHandlingMode { get; }
+
+
+        /// <summary>
+        /// Gets the minimum count of request handling threads.
+        /// </summary>
+        /// <value>
+        /// Gets the minimum count of request handling threads.
+        /// </value>
+        int MinRequestHandlingThreads { get; }
+
+        /// <summary>
+        /// Gets the maximum request handling threads count.
+        /// </summary>
+        /// <value>
+        /// The maximum request handling threads count.
+        /// </value>
+        int MaxRequestHandlingThreads { get; }
+
+
+        /// <summary>
         /// Gets the command assemblies configuration.
         /// </summary>
         /// <value>
         /// The command assemblies.
         /// </value>
         IEnumerable<ICommandAssemblyConfig> CommandAssemblies { get; }
+
+        /// <summary>
+        /// Gets the buffer pools configuration.
+        /// </summary>
+        /// <value>
+        /// The buffer pools configuration.
+        /// </value>
+        IEnumerable<IBufferPoolConfig> BufferPools { get; }
     }
 }

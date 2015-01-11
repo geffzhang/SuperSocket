@@ -5,67 +5,74 @@ using System.Linq;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Threading;
 using SuperSocket.Common;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
+using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Logging;
+using SuperSocket.SocketBase.Pool;
 using SuperSocket.SocketBase.Protocol;
-using SuperSocket.SocketEngine.AsyncSocket;
+using SuperSocket.SocketBase.Utils;
 
 namespace SuperSocket.SocketEngine
 {
-    class AsyncStreamSocketSession : SocketSession, IAsyncSocketSessionBase
+    /// <summary>
+    /// The interface for socket session which requires negotiation before communication
+    /// </summary>
+    interface INegotiateSocketSession
     {
-        private byte[] m_ReadBuffer;
-        private int m_OrigOffset;
-        private int m_Offset;
-        private int m_Length;
+        /// <summary>
+        /// Start negotiates
+        /// </summary>
+        void Negotiate();
 
+        /// <summary>
+        /// Gets a value indicating whether this <see cref="INegotiateSocketSession" /> is result.
+        /// </summary>
+        /// <value>
+        ///   <c>true</c> if result; otherwise, <c>false</c>.
+        /// </value>
+        bool Result { get; }
+
+
+        /// <summary>
+        /// Gets the app session.
+        /// </summary>
+        /// <value>
+        /// The app session.
+        /// </value>
+        IAppSession AppSession { get; }
+
+        /// <summary>
+        /// Occurs when [negotiate completed].
+        /// </summary>
+        event EventHandler NegotiateCompleted;
+    }
+
+    class AsyncStreamSocketSession : SocketSession, INegotiateSocketSession
+    {
         private bool m_IsReset;
 
-        public AsyncStreamSocketSession(Socket client, SslProtocols security, SocketAsyncEventArgsProxy socketAsyncProxy)
-            : this(client, security, socketAsyncProxy, false)
+        private IPool<BufferState> m_BufferStatePool;
+
+        private Stream m_Stream;
+
+        public AsyncStreamSocketSession(Socket client, SslProtocols security, IPool<BufferState> bufferStatePool)
+            : this(client, security, bufferStatePool, false)
         {
 
         }
 
-        public AsyncStreamSocketSession(Socket client, SslProtocols security, SocketAsyncEventArgsProxy socketAsyncProxy, bool isReset)
+        public AsyncStreamSocketSession(Socket client, SslProtocols security, IPool<BufferState> bufferStatePool, bool isReset)
             : base(client)
         {
             SecureProtocol = security;
-            SocketAsyncProxy = socketAsyncProxy;
-            var e = socketAsyncProxy.SocketEventArgs;
-            m_ReadBuffer = e.Buffer;
-            m_OrigOffset = m_Offset = e.Offset;
-            m_Length = e.Count;
-
+            m_BufferStatePool = bufferStatePool;
             m_IsReset = isReset;
-        }
-
-        private bool IsIgnorableException(Exception e)
-        {
-            if (e is ObjectDisposedException)
-                return true;
-
-            if (e is IOException)
-            {
-                if (e.InnerException is ObjectDisposedException)
-                    return true;
-
-                if (e.InnerException is SocketException)
-                {
-                    if (Config.LogAllSocketException)
-                        return false;
-
-                    var se = e.InnerException as SocketException;
-
-                    if (se.ErrorCode == 10004 || se.ErrorCode == 10053 || se.ErrorCode == 10054 || se.ErrorCode == 10058 || se.ErrorCode == -1073741299)
-                        return true;
-                }
-            }
-
-            return false;
         }
 
         /// <summary>
@@ -77,36 +84,24 @@ namespace SuperSocket.SocketEngine
             if (IsClosed)
                 return;
 
-            try
-            {
-                var asyncResult = BeginInitStream(OnBeginInitStreamOnSessionStarted);
-
-                //If the operation is synchronous
-                if (asyncResult == null)
-                    OnSessionStarting();
-            }
-            catch (Exception e)
-            {
-                if(!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                Close(CloseReason.SocketError);
-                return;
-            }
+            OnSessionStarting();
         }
 
         private void OnSessionStarting()
         {
             try
             {
-                m_Stream.BeginRead(m_ReadBuffer, m_Offset, m_Length, OnStreamEndRead, m_Stream);
+                var bufferState = m_BufferStatePool.Get();
+                OnReceiveStarted();
+                var buffer = bufferState.Buffer;
+                m_Stream.BeginRead(buffer, 0, buffer.Length, OnStreamEndRead, bufferState);
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
+                LogError(e);
 
-                this.Close(CloseReason.SocketError);
+                OnReceiveError(CloseReason.SocketError);
+                return;
             }
 
             if (!m_IsReset)
@@ -115,79 +110,92 @@ namespace SuperSocket.SocketEngine
 
         private void OnStreamEndRead(IAsyncResult result)
         {
-            var stream = result.AsyncState as Stream;
+            var bufferState = result.AsyncState as BufferState;
 
             int thisRead = 0;
 
             try
             {
-                thisRead = stream.EndRead(result);
+                thisRead = m_Stream.EndRead(result);
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                this.Close(CloseReason.SocketError);
+                LogError(e);
+                OnReceiveError(CloseReason.SocketError);
                 return;
             }
 
             if (thisRead <= 0)
             {
-                this.Close(CloseReason.ClientClosing);
+                OnReceiveError(CloseReason.ClientClosing);
                 return;
             }
 
-            int offsetDelta;
+            OnReceiveEnded();
+
+            var r = ProcessReceivedData(new ArraySegment<byte>(bufferState.Buffer, 0, thisRead), bufferState);
+
+            if (r.State == ProcessState.Cached)
+            {
+                bufferState = m_BufferStatePool.Get();
+            }
+
+            OnReceiveStarted();
 
             try
             {
-                offsetDelta = AppSession.ProcessRequest(m_ReadBuffer, m_Offset, thisRead, true);
-            }
-            catch (Exception ex)
-            {
-                AppSession.Logger.Error(AppSession, "protocol error", ex);
-                this.Close(CloseReason.ProtocolError);
-                return;
-            }
-
-            try
-            {
-                if (offsetDelta < 0 || offsetDelta >= Config.ReceiveBufferSize)
-                    throw new ArgumentException(string.Format("Illigal offsetDelta: {0}", offsetDelta), "offsetDelta");
-
-                m_Offset = m_OrigOffset + offsetDelta;
-                m_Length = Config.ReceiveBufferSize - offsetDelta;
-
-                m_Stream.BeginRead(m_ReadBuffer, m_Offset, m_Length, OnStreamEndRead, m_Stream);
+                var buffer = bufferState.Buffer;
+                m_Stream.BeginRead(buffer, 0, buffer.Length, OnStreamEndRead, bufferState);
             }
             catch (Exception exc)
             {
-                if (!IsIgnorableException(exc))
-                    AppSession.Logger.Error(AppSession, exc);
-
-                this.Close(CloseReason.SocketError);
+                LogError(exc);
+                OnReceiveError(CloseReason.SocketError);
                 return;
             }
         }
 
-        private Stream m_Stream;
+        private SslStream CreateSslStream(ICertificateConfig certConfig)
+        {
+            //Enable client certificate function only if ClientCertificateRequired is true in the configuration
+            if (!certConfig.ClientCertificateRequired)
+                return new SslStream(new NetworkStream(Client), false);
+
+            //Subscribe the client validation callback
+            return new SslStream(new NetworkStream(Client), false, ValidateClientCertificate);
+        }
+
+        private bool ValidateClientCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            var session = AppSession;
+
+            //Invoke the AppServer's method ValidateClientCertificate
+            var clientCertificateValidator = session.AppServer as IRemoteCertificateValidator;
+
+            if (clientCertificateValidator != null)
+                return clientCertificateValidator.Validate(session, sender, certificate, chain, sslPolicyErrors);
+
+            //Return the native validation result
+            return sslPolicyErrors == SslPolicyErrors.None;
+        }
 
         private IAsyncResult BeginInitStream(AsyncCallback asyncCallback)
         {
             IAsyncResult result = null;
+
+            var certConfig = AppSession.Config.Certificate;
 
             switch (SecureProtocol)
             {
                 case (SslProtocols.Default):
                 case (SslProtocols.Tls):
                 case (SslProtocols.Ssl3):
-                    SslStream sslStream = new SslStream(new NetworkStream(Client), false);
-                    result = sslStream.BeginAuthenticateAsServer(AppSession.AppServer.Certificate, false, SslProtocols.Default, false, asyncCallback, sslStream);
+                    SslStream sslStream = CreateSslStream(certConfig);
+                    result = sslStream.BeginAuthenticateAsServer(AppSession.AppServer.Certificate, certConfig.ClientCertificateRequired, SslProtocols.Default, false, asyncCallback, sslStream);
                     break;
                 case (SslProtocols.Ssl2):
-                    SslStream ssl2Stream = new SslStream(new NetworkStream(Client), false);
-                    result = ssl2Stream.BeginAuthenticateAsServer(AppSession.AppServer.Certificate, false, SslProtocols.Ssl2, false, asyncCallback, ssl2Stream);
+                    SslStream ssl2Stream = CreateSslStream(certConfig);
+                    result = ssl2Stream.BeginAuthenticateAsServer(AppSession.AppServer.Certificate, certConfig.ClientCertificateRequired, SslProtocols.Ssl2, false, asyncCallback, ssl2Stream);
                     break;
                 default:
                     m_Stream = new NetworkStream(Client);
@@ -197,15 +205,17 @@ namespace SuperSocket.SocketEngine
             return result;
         }
 
-        private void OnBeginInitStreamOnSessionStarted(IAsyncResult result)
+        private void OnBeginInitStreamOnSessionConnected(IAsyncResult result)
         {
-            OnBeginInitStream(result);
-
-            if (m_Stream != null)
-                OnSessionStarting();
+            OnBeginInitStream(result, true);
         }
 
         private void OnBeginInitStream(IAsyncResult result)
+        {
+            OnBeginInitStream(result, false);
+        }
+
+        private void OnBeginInitStream(IAsyncResult result, bool connect)
         {
             var sslStream = result.AsyncState as SslStream;
 
@@ -213,41 +223,52 @@ namespace SuperSocket.SocketEngine
             {
                 sslStream.EndAuthenticateAsServer(result);
             }
+            catch (IOException exc)
+            {
+                LogError(exc);
+
+                if (!connect)//Session was already registered
+                    this.Close(CloseReason.SocketError);
+
+                OnNegotiateCompleted(false);
+                return;
+            }
             catch (Exception e)
             {
-                if(!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
+                LogError(e);
 
-                this.Close(CloseReason.SocketError);
+                if (!connect)//Session was already registered
+                    this.Close(CloseReason.SocketError);
+
+                OnNegotiateCompleted(false);
                 return;
             }
 
             m_Stream = sslStream;
+            OnNegotiateCompleted(true);
         }
 
-        protected override void SendSync(IPosList<ArraySegment<byte>> items)
+        protected override void SendSync(SendingQueue queue)
         {
             try
             {
-                for (var i = 0; i < items.Count; i++)
+                for (var i = 0; i < queue.Count; i++)
                 {
-                    var item = items[i];
+                    var item = queue[i];
                     m_Stream.Write(item.Array, item.Offset, item.Count);
                 }
+
+                OnSendingCompleted(queue);
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                Close(CloseReason.SocketError);
+                LogError(e);
+                OnSendError(queue, CloseReason.SocketError);
                 return;
             }
-
-            OnSendingCompleted();
         }
 
-        protected override void OnSendingCompleted()
+        protected override void OnSendingCompleted(SendingQueue queue)
         {
             try
             {
@@ -255,59 +276,54 @@ namespace SuperSocket.SocketEngine
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                Close(CloseReason.SocketError);
+                LogError(e);
+                OnSendError(queue, CloseReason.SocketError);
                 return;
             }
 
-            base.OnSendingCompleted();
+            base.OnSendingCompleted(queue);
         }
 
-        protected override void SendAsync(IPosList<ArraySegment<byte>> items)
+        protected override void SendAsync(SendingQueue queue)
         {
             try
             {
-                var item = items[items.Position];
-                m_Stream.BeginWrite(item.Array, item.Offset, item.Count, OnEndWrite, items);
+                var item = queue[queue.Position];
+                m_Stream.BeginWrite(item.Array, item.Offset, item.Count, OnEndWrite, queue);
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                Close(CloseReason.SocketError);
+                LogError(e);
+                OnSendError(queue, CloseReason.SocketError);
             }
         }
 
         private void OnEndWrite(IAsyncResult result)
         {
+            var queue = result.AsyncState as SendingQueue;
+
             try
             {
                 m_Stream.EndWrite(result);
             }
             catch (Exception e)
             {
-                if (!IsIgnorableException(e))
-                    AppSession.Logger.Error(AppSession, e);
-
-                Close(CloseReason.SocketError);
+                LogError(e);
+                OnSendError(queue, CloseReason.SocketError);
                 return;
             }
 
-            var items = result.AsyncState as IPosList<ArraySegment<byte>>;
-            var nextPos = items.Position + 1;
+            var nextPos = queue.Position + 1;
 
             //Has more data to send
-            if (nextPos < items.Count)
+            if (nextPos < queue.Count)
             {
-                items.Position = nextPos;
-                SendAsync(items);
+                queue.Position = nextPos;
+                SendAsync(queue);
                 return;
             }
 
-            OnSendingCompleted();
+            OnSendingCompleted(queue);
         }
 
         public override void ApplySecureProtocol()
@@ -318,11 +334,68 @@ namespace SuperSocket.SocketEngine
                 asyncResult.AsyncWaitHandle.WaitOne();
         }
 
-        public SocketAsyncEventArgsProxy SocketAsyncProxy { get; private set; }
+        private bool m_NegotiateResult = false;
 
-        ILog ILoggerProvider.Logger
+        void INegotiateSocketSession.Negotiate()
         {
-            get { return AppSession.Logger; }
+            IAsyncResult asyncResult;
+
+            try
+            {
+                asyncResult = BeginInitStream(OnBeginInitStreamOnSessionConnected);
+            }
+            catch (Exception e)
+            {
+                LogError(e);
+                OnNegotiateCompleted(false);
+                return;
+            }
+
+            if (asyncResult == null)
+            {
+                OnNegotiateCompleted(true);
+                return;
+            }
+        }
+
+        bool INegotiateSocketSession.Result
+        {
+            get { return m_NegotiateResult; }
+        }
+
+        private EventHandler m_NegotiateCompleted;
+
+        event EventHandler INegotiateSocketSession.NegotiateCompleted
+        {
+            add { m_NegotiateCompleted += value; }
+            remove { m_NegotiateCompleted -= value; }
+        }
+
+        private void OnNegotiateCompleted(bool negotiateResult)
+        {
+            m_NegotiateResult = negotiateResult;
+
+            //One time event handler
+            var handler = Interlocked.Exchange<EventHandler>(ref m_NegotiateCompleted, null);
+
+            if (handler == null)
+                return;
+
+            handler(this, EventArgs.Empty);
+        }
+
+        protected override void ReturnBuffer(IList<KeyValuePair<ArraySegment<byte>, IBufferState>> buffers, int offset, int length)
+        {
+            for (var i = 0; i < length; i++)
+            {
+                var buffer = buffers[offset + i];
+                var state = buffer.Value as BufferState;
+
+                if (state != null && state.DecreaseReference() == 0)
+                {
+                    m_BufferStatePool.Return(state);
+                }
+            }
         }
     }
 }

@@ -1,12 +1,14 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Text;
 using SuperSocket.Common;
-using SuperSocket.Facility.Protocol;
+using SuperSocket.ProtoBase;
+using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Protocol;
 
 namespace SuperSocket.QuickStart.CustomProtocol
 {
-    class MyReceiveFilter : FixedHeaderReceiveFilter<BinaryRequestInfo>
+    class MyReceiveFilter : FixedHeaderReceiveFilter<BufferedPackageInfo>
     {
         public MyReceiveFilter()
             : base(6)
@@ -14,14 +16,23 @@ namespace SuperSocket.QuickStart.CustomProtocol
 
         }
 
-        protected override int GetBodyLengthFromHeader(byte[] header, int offset, int length)
+        protected override int GetBodyLengthFromHeader(IList<ArraySegment<byte>> packageData, int length)
         {
-            return (int)header[offset + 4] * 256 + (int)header[offset + 5];
+            using (var reader = this.GetBufferReader(packageData))
+            {
+                reader.Skip(4);
+                return reader.ReadUInt16();
+            }
         }
 
-        protected override BinaryRequestInfo ResolveRequestInfo(ArraySegment<byte> header, byte[] bodyBuffer, int offset, int length)
+        public override BufferedPackageInfo ResolvePackage(IList<ArraySegment<byte>> packageData)
         {
-            return new BinaryRequestInfo(Encoding.UTF8.GetString(header.Array, header.Offset, 4), bodyBuffer.CloneRange(offset, length));
+            using (var reader = this.GetBufferReader(packageData))
+            {
+                var key = reader.ReadString(4, Encoding.UTF8);
+                reader.Skip(2);
+                return new BufferedPackageInfo(key, reader.Take((int)reader.Length - 6));
+            }
         }
     }
 }

@@ -2,16 +2,25 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Security;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using SuperSocket.Common;
-using SuperSocket.SocketBase.Logging;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Config;
+using SuperSocket.SocketBase.Logging;
+using SuperSocket.SocketBase.Metadata;
+using SuperSocket.SocketBase.Pool;
 using SuperSocket.SocketBase.Protocol;
-using SuperSocket.SocketBase.Security;
 using SuperSocket.SocketBase.Provider;
+using SuperSocket.SocketBase.Scheduler;
+using SuperSocket.SocketBase.Security;
+using SuperSocket.SocketBase.Utils;
+using SuperSocket.SocketBase.ServerResource;
 
 namespace SuperSocket.SocketBase
 {
@@ -19,10 +28,41 @@ namespace SuperSocket.SocketBase
     /// AppServer base class
     /// </summary>
     /// <typeparam name="TAppSession">The type of the app session.</typeparam>
-    /// <typeparam name="TRequestInfo">The type of the request info.</typeparam>
-    public abstract partial class AppServerBase<TAppSession, TRequestInfo> : IAppServer<TAppSession, TRequestInfo>, IRawDataProcessor<TAppSession>, IRequestHandler<TRequestInfo>, IDisposable
-        where TRequestInfo : class, IRequestInfo
-        where TAppSession : AppSession<TAppSession, TRequestInfo>, IAppSession, new()
+    /// <typeparam name="TPackageInfo">The type of the package info.</typeparam>
+    public abstract partial class AppServer<TAppSession, TPackageInfo> : AppServer<TAppSession, TPackageInfo, string>
+        where TPackageInfo : class, IPackageInfo<string>
+        where TAppSession : AppSession<TAppSession, TPackageInfo>, IAppSession, new()
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AppServer&lt;TAppSession, TPackageInfo&gt;"/> class.
+        /// </summary>
+        public AppServer()
+            : base()
+        {
+
+        }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AppServer&lt;TAppSession, TPackageInfo&gt;"/> class.
+        /// </summary>
+        /// <param name="receiveFilterFactory">The Receive filter factory.</param>
+        public AppServer(IReceiveFilterFactory<TPackageInfo> receiveFilterFactory)
+            : base(receiveFilterFactory)
+        {
+
+        }
+    }
+
+    /// <summary>
+    /// AppServer base class
+    /// </summary>
+    /// <typeparam name="TAppSession">The type of the app session.</typeparam>
+    /// <typeparam name="TPackageInfo">The type of the request info.</typeparam>
+    /// <typeparam name="TKey">The type of the package key.</typeparam>
+    [AppServerMetadataType(typeof(DefaultAppServerMetadata))]
+    public abstract partial class AppServer<TAppSession, TPackageInfo, TKey> : IAppServer<TAppSession, TPackageInfo>, IRawDataProcessor<TAppSession>, IRequestHandler<TPackageInfo>, ISocketServerAccessor, IStatusInfoSource, IRemoteCertificateValidator, IActiveConnector, ISessionRegister, ISystemEndPoint, IDisposable
+        where TPackageInfo : class, IPackageInfo<TKey>
+        where TAppSession : AppSession<TAppSession, TPackageInfo, TKey>, IAppSession, new()
     {
         /// <summary>
         /// Null appSession instance
@@ -56,11 +96,30 @@ namespace SuperSocket.SocketBase
             }
         }
 
-
         /// <summary>
         /// Gets the certificate of current server.
         /// </summary>
         public X509Certificate Certificate { get; private set; }
+
+        private ServerResourceItem[] m_ServerResources;
+
+        private IBufferManager m_BufferManager;
+
+        /// <summary>
+        /// Gets the buffer manager.
+        /// </summary>
+        /// <value>
+        /// The buffer manager.
+        /// </value>
+        IBufferManager IAppServer.BufferManager
+        {
+            get { return m_BufferManager; }
+        }
+
+        /// <summary>
+        /// The object pool for request executing context
+        /// </summary>
+        private IPool<RequestExecutingContext<TAppSession, TPackageInfo>> m_RequestExecutingContextPool;
 
         /// <summary>
         /// Gets or sets the receive filter factory.
@@ -68,7 +127,7 @@ namespace SuperSocket.SocketBase
         /// <value>
         /// The receive filter factory.
         /// </value>
-        public virtual IReceiveFilterFactory<TRequestInfo> ReceiveFilterFactory { get; protected set; }
+        public virtual IReceiveFilterFactory<TPackageInfo> ReceiveFilterFactory { get; protected set; }
 
         /// <summary>
         /// Gets the Receive filter factory.
@@ -78,9 +137,9 @@ namespace SuperSocket.SocketBase
             get { return this.ReceiveFilterFactory; }
         }
 
-        private List<ICommandLoader> m_CommandLoaders;
+        private List<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> m_CommandLoaders = new List<ICommandLoader<ICommand<TAppSession, TPackageInfo>>>();
 
-        private Dictionary<string, CommandInfo<ICommand<TAppSession, TRequestInfo>>> m_CommandContainer;
+        private Dictionary<TKey, CommandInfo<ICommand<TAppSession, TPackageInfo>>> m_CommandContainer;
 
         private CommandFilterAttribute[] m_GlobalCommandFilters;
 
@@ -111,6 +170,8 @@ namespace SuperSocket.SocketBase
         private List<IConnectionFilter> m_ConnectionFilters;
 
         private long m_TotalHandledRequests = 0;
+
+        private TaskScheduler m_RequestHandlingTaskScheduler;
 
         /// <summary>
         /// Gets the total handled requests number.
@@ -150,19 +211,30 @@ namespace SuperSocket.SocketBase
         /// </value>
         public ILogFactory LogFactory { get; private set; }
 
+
         /// <summary>
-        /// Initializes a new instance of the <see cref="AppServerBase&lt;TAppSession, TRequestInfo&gt;"/> class.
+        /// Gets the default text encoding.
         /// </summary>
-        public AppServerBase()
+        /// <value>
+        /// The text encoding.
+        /// </value>
+        public Encoding TextEncoding { get; private set; }
+
+        private INewSessionHandler m_NewSessionHandler;
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="AppServer&lt;TAppSession, TPackageInfo&gt;"/> class.
+        /// </summary>
+        public AppServer()
         {
 
         }
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="AppServerBase&lt;TAppSession, TRequestInfo&gt;"/> class.
+        /// Initializes a new instance of the <see cref="AppServer&lt;TAppSession, TPackageInfo&gt;"/> class.
         /// </summary>
         /// <param name="receiveFilterFactory">The Receive filter factory.</param>
-        public AppServerBase(IReceiveFilterFactory<TRequestInfo> receiveFilterFactory)
+        public AppServer(IReceiveFilterFactory<TPackageInfo> receiveFilterFactory)
         {
             this.ReceiveFilterFactory = receiveFilterFactory;
         }
@@ -183,21 +255,21 @@ namespace SuperSocket.SocketBase
         /// </summary>
         /// <param name="discoveredCommands">The discovered commands.</param>
         /// <returns></returns>
-        protected virtual bool SetupCommands(Dictionary<string, ICommand<TAppSession, TRequestInfo>> discoveredCommands)
+        protected virtual bool SetupCommands(Dictionary<string, ICommand<TAppSession, TPackageInfo>> discoveredCommands)
         {
             foreach (var loader in m_CommandLoaders)
             {
                 loader.Error += new EventHandler<ErrorEventArgs>(CommandLoaderOnError);
-                loader.Updated += new EventHandler<CommandUpdateEventArgs<ICommand>>(CommandLoaderOnCommandsUpdated);
+                loader.Updated += new EventHandler<CommandUpdateEventArgs<ICommand<TAppSession, TPackageInfo>>>(CommandLoaderOnCommandsUpdated);
 
-                if (!loader.Initialize<ICommand<TAppSession, TRequestInfo>>(RootConfig, this))
+                if (!loader.Initialize(RootConfig, this))
                 {
                     if (Logger.IsErrorEnabled)
                         Logger.ErrorFormat("Failed initialize the command loader {0}.", loader.ToString());
                     return false;
                 }
 
-                IEnumerable<ICommand> commands;
+                IEnumerable<ICommand<TAppSession, TPackageInfo>> commands;
                 if (!loader.TryLoadCommands(out commands))
                 {
                     if (Logger.IsErrorEnabled)
@@ -216,7 +288,7 @@ namespace SuperSocket.SocketBase
                             return false;
                         }
 
-                        var castedCommand = c as ICommand<TAppSession, TRequestInfo>;
+                        var castedCommand = c as ICommand<TAppSession, TPackageInfo>;
 
                         if (castedCommand == null)
                         {
@@ -236,7 +308,7 @@ namespace SuperSocket.SocketBase
             return true;
         }
 
-        void CommandLoaderOnCommandsUpdated(object sender, CommandUpdateEventArgs<ICommand> e)
+        void CommandLoaderOnCommandsUpdated(object sender, CommandUpdateEventArgs<ICommand<TAppSession, TPackageInfo>> e)
         {
             var workingDict = m_CommandContainer.Values.ToDictionary(c => c.Command.Name, c => c.Command, StringComparer.OrdinalIgnoreCase);
             var updatedCommands = 0;
@@ -246,31 +318,21 @@ namespace SuperSocket.SocketBase
                 if (c == null)
                     continue;
 
-                var castedCommand = c.Command as ICommand<TAppSession, TRequestInfo>;
-
-                if (castedCommand == null)
-                {
-                    if (Logger.IsErrorEnabled)
-                        Logger.Error("Invalid command has been found! Command name: " + c.Command.Name);
-
-                    continue;
-                }
-
                 if (c.UpdateAction == CommandUpdateAction.Remove)
                 {
-                    workingDict.Remove(castedCommand.Name);
+                    workingDict.Remove(c.Command.Name);
                     if (Logger.IsInfoEnabled)
                         Logger.InfoFormat("The command '{0}' has been removed from this server!", c.Command.Name);
                 }
                 else if (c.UpdateAction == CommandUpdateAction.Add)
                 {
-                    workingDict.Add(castedCommand.Name, castedCommand);
+                    workingDict.Add(c.Command.Name, c.Command);
                     if (Logger.IsInfoEnabled)
                         Logger.InfoFormat("The command '{0}' has been added into this server!", c.Command.Name);
                 }
                 else
                 {
-                    workingDict[c.Command.Name] = castedCommand;
+                    workingDict[c.Command.Name] = c.Command;
                     if (Logger.IsInfoEnabled)
                         Logger.InfoFormat("The command '{0}' has been updated!", c.Command.Name);
                 }
@@ -303,6 +365,8 @@ namespace SuperSocket.SocketBase
             return true;
         }
 
+        partial void SetDefaultCulture(IRootConfig rootConfig, IServerConfig config);
+
         private void SetupBasic(IRootConfig rootConfig, IServerConfig config, ISocketServerFactory socketServerFactory)
         {
             if (rootConfig == null)
@@ -319,6 +383,8 @@ namespace SuperSocket.SocketBase
                 m_Name = string.Format("{0}-{1}", this.GetType().Name, Math.Abs(this.GetHashCode()));
 
             Config = config;
+
+            SetDefaultCulture(rootConfig, config);
 
             if (!m_ThreadPoolConfigured)
             {
@@ -342,9 +408,15 @@ namespace SuperSocket.SocketBase
             }
 
             m_SocketServerFactory = socketServerFactory;
+
+            //Read text encoding from the configuration
+            if (!string.IsNullOrEmpty(config.TextEncoding))
+                TextEncoding = Encoding.GetEncoding(config.TextEncoding);
+            else
+                TextEncoding = new ASCIIEncoding();
         }
 
-        private bool SetupMedium(IReceiveFilterFactory<TRequestInfo> receiveFilterFactory, IEnumerable<IConnectionFilter> connectionFilters, IEnumerable<ICommandLoader> commandLoaders)
+        private bool SetupMedium(IReceiveFilterFactory<TPackageInfo> receiveFilterFactory, IEnumerable<IConnectionFilter> connectionFilters, IEnumerable<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> commandLoaders)
         {
             if (receiveFilterFactory != null)
                 ReceiveFilterFactory = receiveFilterFactory;
@@ -357,9 +429,10 @@ namespace SuperSocket.SocketBase
                 m_ConnectionFilters.AddRange(connectionFilters);
             }
 
-            SetupCommandLoader(commandLoaders);
+            if (commandLoaders != null && commandLoaders.Any())
+                m_CommandLoaders.AddRange(commandLoaders);
 
-            return true;
+            return SetupCommandLoaders(m_CommandLoaders);
         }
 
         private bool SetupAdvanced(IServerConfig config)
@@ -372,7 +445,7 @@ namespace SuperSocket.SocketBase
 
             m_GlobalCommandFilters = GetCommandFilterAttributes(this.GetType());
 
-            var discoveredCommands = new Dictionary<string, ICommand<TAppSession, TRequestInfo>>(StringComparer.OrdinalIgnoreCase);
+            var discoveredCommands = new Dictionary<string, ICommand<TAppSession, TPackageInfo>>(StringComparer.OrdinalIgnoreCase);
             if (!SetupCommands(discoveredCommands))
                 return false;
 
@@ -381,17 +454,25 @@ namespace SuperSocket.SocketBase
             return true;
         }
 
-        private void OnCommandSetup(IDictionary<string, ICommand<TAppSession, TRequestInfo>> discoveredCommands)
+        private void OnCommandSetup(IDictionary<string, ICommand<TAppSession, TPackageInfo>> discoveredCommands)
         {
-            var commandContainer = new Dictionary<string, CommandInfo<ICommand<TAppSession, TRequestInfo>>>(StringComparer.OrdinalIgnoreCase);
+            var isStringCmdKey = typeof(TKey) == typeof(string);
+            var commandContainer = isStringCmdKey
+                    ? new Dictionary<TKey, CommandInfo<ICommand<TAppSession, TPackageInfo>>>((IEqualityComparer<TKey>)StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<TKey, CommandInfo<ICommand<TAppSession, TPackageInfo>>>();
 
             foreach (var command in discoveredCommands.Values)
             {
-                commandContainer.Add(command.Name,
-                    new CommandInfo<ICommand<TAppSession, TRequestInfo>>(command, m_GlobalCommandFilters));
+                commandContainer.Add((TKey)command.GetCommandKey<TKey>(),
+                    new CommandInfo<ICommand<TAppSession, TPackageInfo>>(command, m_GlobalCommandFilters));
             }
 
             Interlocked.Exchange(ref m_CommandContainer, commandContainer);
+        }
+
+        internal virtual IReceiveFilterFactory<TPackageInfo> CreateDefaultReceiveFilterFactory()
+        {
+            return null;
         }
 
         private bool SetupFinal()
@@ -399,10 +480,23 @@ namespace SuperSocket.SocketBase
             //Check receiveFilterFactory
             if (ReceiveFilterFactory == null)
             {
-                if (Logger.IsErrorEnabled)
-                    Logger.Error("receiveFilterFactory is required!");
+                ReceiveFilterFactory = CreateDefaultReceiveFilterFactory();
 
-                return false;
+                if (ReceiveFilterFactory == null)
+                {
+                    if (Logger.IsErrorEnabled)
+                        Logger.Error("receiveFilterFactory is required!");
+
+                    return false;
+                }
+            }
+
+            var newSessionHandler = GetService<INewSessionHandler>();
+
+            if (newSessionHandler != null)
+            {
+                newSessionHandler.Initialize(this);
+                m_NewSessionHandler = newSessionHandler;
             }
 
             var plainConfig = Config as ServerConfig;
@@ -420,7 +514,11 @@ namespace SuperSocket.SocketBase
 
             try
             {
-                m_ServerSummary = CreateServerSummary();
+                m_ServerStatus = new StatusInfoCollection();
+                m_ServerStatus.Name = Name;
+                m_ServerStatus.Tag = Name;
+                m_ServerStatus[StatusInfoKeys.MaxConnectionNumber] = Config.MaxConnectionNumber;
+                m_ServerStatus[StatusInfoKeys.Listeners] = m_Listeners;
             }
             catch (Exception e)
             {
@@ -430,9 +528,21 @@ namespace SuperSocket.SocketBase
                 return false;
             }
 
+
+            m_SessionContainer = new DictionarySessionContainer<TAppSession>();
+
+            if (!m_SessionContainer.Initialize(Config))
+            {
+                if (Logger.IsErrorEnabled)
+                    Logger.Error("Failed to initialize the session container!");
+
+                return false;
+            }
+
             return SetupSocketServer();
         }
 
+        
         /// <summary>
         /// Setups with the specified port.
         /// </summary>
@@ -499,7 +609,7 @@ namespace SuperSocket.SocketBase
 
             Logger = CreateLogger(this.Name);
 
-            if (!SetupMedium(GetProviderInstance<IReceiveFilterFactory<TRequestInfo>>(providers), GetProviderInstance<IEnumerable<IConnectionFilter>>(providers), GetProviderInstance<IEnumerable<ICommandLoader>>(providers)))
+            if (!SetupMedium(GetProviderInstance<IReceiveFilterFactory<TPackageInfo>>(providers), GetProviderInstance<IEnumerable<IConnectionFilter>>(providers), GetProviderInstance<IEnumerable<ICommandLoader<ICommand<TAppSession, TPackageInfo>>>>(providers)))
                 return false;
 
             if (!SetupAdvanced(config))
@@ -535,7 +645,7 @@ namespace SuperSocket.SocketBase
         /// <param name="connectionFilters">The connection filters.</param>
         /// <param name="commandLoaders">The command loaders.</param>
         /// <returns></returns>
-        public bool Setup(IServerConfig config, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TRequestInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader> commandLoaders = null)
+        public bool Setup(IServerConfig config, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TPackageInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> commandLoaders = null)
         {
             return Setup(new RootConfig(), config, socketServerFactory, receiveFilterFactory, logFactory, connectionFilters, commandLoaders);
         }
@@ -551,7 +661,7 @@ namespace SuperSocket.SocketBase
         /// <param name="connectionFilters">The connection filters.</param>
         /// <param name="commandLoaders">The command loaders.</param>
         /// <returns></returns>
-        public bool Setup(IRootConfig rootConfig, IServerConfig config, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TRequestInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader> commandLoaders = null)
+        public bool Setup(IRootConfig rootConfig, IServerConfig config, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TPackageInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> commandLoaders = null)
         {
             TrySetInitializedState();
 
@@ -569,7 +679,7 @@ namespace SuperSocket.SocketBase
                 return false;
 
             if (!Setup(rootConfig, config))
-                return false;            
+                return false;
 
             if (!SetupFinal())
                 return false;
@@ -589,7 +699,7 @@ namespace SuperSocket.SocketBase
         /// <param name="connectionFilters">The connection filters.</param>
         /// <param name="commandLoaders">The command loaders.</param>
         /// <returns>return setup result</returns>
-        public bool Setup(string ip, int port, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TRequestInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader> commandLoaders = null)
+        public bool Setup(string ip, int port, ISocketServerFactory socketServerFactory = null, IReceiveFilterFactory<TPackageInfo> receiveFilterFactory = null, ILogFactory logFactory = null, IEnumerable<IConnectionFilter> connectionFilters = null, IEnumerable<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> commandLoaders = null)
         {
             return Setup(new ServerConfig
                             {
@@ -632,10 +742,31 @@ namespace SuperSocket.SocketBase
 
             Logger = CreateLogger(this.Name);
 
+            IEnumerable<IConnectionFilter> connectionFilters = null;
+
+            if (!TryGetProviderInstances(factories, ProviderKey.ConnectionFilter, null,
+                    (p, f) =>
+                    {
+                        var ret = p.Initialize(f.Name, this);
+
+                        if(!ret)
+                        {
+                            Logger.ErrorFormat("Failed to initialize the connection filter: {0}.", f.Name);
+                        }
+
+                        return ret;
+                    }, out connectionFilters))
+            {
+                return false;
+            }
+
             if (!SetupMedium(
-                    GetSingleProviderInstance<IReceiveFilterFactory<TRequestInfo>>(factories, ProviderKey.ReceiveFilterFactory),
-                    GetProviderInstances<IConnectionFilter>(factories, ProviderKey.ConnectionFilter),
-                    GetProviderInstances<ICommandLoader>(factories, ProviderKey.CommandLoader)))
+                    GetSingleProviderInstance<IReceiveFilterFactory<TPackageInfo>>(factories, ProviderKey.ReceiveFilterFactory),
+                    connectionFilters,
+                    GetProviderInstances<ICommandLoader<ICommand<TAppSession, TPackageInfo>>>(
+                            factories,
+                            ProviderKey.CommandLoader,
+                            (t) => Activator.CreateInstance(t.MakeGenericType(typeof(ICommand<TAppSession, TPackageInfo>))))))
             {
                 return false;
             }
@@ -664,15 +795,46 @@ namespace SuperSocket.SocketBase
             return factory.ExportFactory.CreateExport<TProvider>();
         }
 
-        private IEnumerable<TProvider> GetProviderInstances<TProvider>(ProviderFactoryInfo[] factories, ProviderKey key)
+        private bool TryGetProviderInstances<TProvider>(ProviderFactoryInfo[] factories, ProviderKey key, Func<Type, object> creator, Func<TProvider, ProviderFactoryInfo, bool> initializer, out IEnumerable<TProvider> providers)
             where TProvider : class
         {
             IEnumerable<ProviderFactoryInfo> selectedFactories = factories.Where(p => p.Key.Name == key.Name);
 
             if (!selectedFactories.Any())
-                return null;
+            {
+                providers = null;
+                return true;
+            }
 
-            return selectedFactories.Select(f => f.ExportFactory.CreateExport<TProvider>());
+            providers = new List<TProvider>();
+
+            var list = (List<TProvider>)providers;
+
+            foreach (var f in selectedFactories)
+            {
+                var provider = creator == null ? f.ExportFactory.CreateExport<TProvider>() : f.ExportFactory.CreateExport<TProvider>(creator);
+
+                if (!initializer(provider, f))
+                    return false;
+
+                list.Add(provider);
+            }
+
+            return true;
+        }
+
+        private IEnumerable<TProvider> GetProviderInstances<TProvider>(ProviderFactoryInfo[] factories, ProviderKey key)
+            where TProvider : class
+        {
+            return GetProviderInstances<TProvider>(factories, key, null);
+        }
+
+        private IEnumerable<TProvider> GetProviderInstances<TProvider>(ProviderFactoryInfo[] factories, ProviderKey key, Func<Type, object> creator)
+            where TProvider : class
+        {
+            IEnumerable<TProvider> providers;
+            TryGetProviderInstances<TProvider>(factories, key, creator, (p, f) => true, out providers);
+            return providers;
         }
 
         private bool SetupLogFactory(ILogFactory logFactory)
@@ -690,14 +852,14 @@ namespace SuperSocket.SocketBase
             return true;
         }
 
-        private bool SetupCommandLoader(IEnumerable<ICommandLoader> commandLoaders)
+        /// <summary>
+        /// Setups the command loaders.
+        /// </summary>
+        /// <param name="commandLoaders">The command loaders.</param>
+        /// <returns></returns>
+        protected virtual bool SetupCommandLoaders(List<ICommandLoader<ICommand<TAppSession, TPackageInfo>>> commandLoaders)
         {
-            m_CommandLoaders = new List<ICommandLoader>();
-            m_CommandLoaders.Add(new ReflectCommandLoader());
-
-            if (commandLoaders != null && commandLoaders.Any())
-                m_CommandLoaders.AddRange(commandLoaders);
-
+            commandLoaders.Add(new ReflectCommandLoader<ICommand<TAppSession, TPackageInfo>>());
             return true;
         }
 
@@ -786,7 +948,26 @@ namespace SuperSocket.SocketBase
                 return null;
             }
 
-            return CertificateManager.Initialize(certificate);
+            return CertificateManager.Initialize(certificate, GetFilePath);
+        }
+
+        bool IRemoteCertificateValidator.Validate(IAppSession session, object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            return ValidateClientCertificate((TAppSession)session, sender, certificate, chain, sslPolicyErrors);
+        }
+
+        /// <summary>
+        /// Validates the client certificate. This method is only used if the certificate configuration attribute "clientCertificateRequired" is true.
+        /// </summary>
+        /// <param name="session">The session.</param>
+        /// <param name="sender">The sender.</param>
+        /// <param name="certificate">The certificate.</param>
+        /// <param name="chain">The chain.</param>
+        /// <param name="sslPolicyErrors">The SSL policy errors.</param>
+        /// <returns>return the validation result</returns>
+        protected virtual bool ValidateClientCertificate(TAppSession session, object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            return sslPolicyErrors == SslPolicyErrors.None;
         }
 
         /// <summary>
@@ -797,7 +978,7 @@ namespace SuperSocket.SocketBase
         {
             try
             {
-                m_SocketServer = m_SocketServerFactory.CreateSocketServer<TRequestInfo>(this, m_Listeners, Config);
+                m_SocketServer = m_SocketServerFactory.CreateSocketServer<TPackageInfo>(this, m_Listeners, Config);
                 return m_SocketServer != null;
             }
             catch (Exception e)
@@ -868,7 +1049,7 @@ namespace SuperSocket.SocketBase
                     {
                         SslProtocols configProtocol;
 
-                        if (string.IsNullOrEmpty(l.Security) && BasicSecurity != SslProtocols.None)
+                        if (string.IsNullOrEmpty(l.Security))
                         {
                             configProtocol = BasicSecurity;
                         }
@@ -928,6 +1109,17 @@ namespace SuperSocket.SocketBase
         private ISocketServer m_SocketServer;
 
         /// <summary>
+        /// Gets the socket server.
+        /// </summary>
+        /// <value>
+        /// The socket server.
+        /// </value>
+        ISocketServer ISocketServerAccessor.SocketServer
+        {
+            get { return m_SocketServer; }
+        }
+
+        /// <summary>
         /// Starts this server instance.
         /// </summary>
         /// <returns>
@@ -935,6 +1127,8 @@ namespace SuperSocket.SocketBase
         /// </returns>
         public virtual bool Start()
         {
+            AppContext.SetCurrentServer(this);
+
             var origStateCode = Interlocked.CompareExchange(ref m_StateCode, ServerStateConst.Starting, ServerStateConst.NotStarted);
 
             if (origStateCode != ServerStateConst.NotStarted)
@@ -948,30 +1142,76 @@ namespace SuperSocket.SocketBase
                 return false;
             }
 
-            if (!m_SocketServer.Start())
+            try
             {
-                m_StateCode = ServerStateConst.NotStarted;
+                using (var transaction = new LightweightTransaction())
+                {
+                    transaction.RegisterItem(
+                        ServerResourceItem.Create<RequestHandlingSchedulerResource, TaskScheduler>(
+                            (scheduler) => this.m_RequestHandlingTaskScheduler = scheduler, Config, () => this.m_RequestHandlingTaskScheduler));
+
+                    transaction.RegisterItem(
+                        ServerResourceItem.Create<BufferManagerResource, IBufferManager>(
+                            (bufferManager) => this.m_BufferManager = bufferManager, Config));
+
+                    transaction.RegisterItem(
+                        ServerResourceItem.Create<RequestExecutingContextPoolResource<TAppSession, TPackageInfo>, IPool<RequestExecutingContext<TAppSession, TPackageInfo>>>(
+                            (pool) => this.m_RequestExecutingContextPool = pool, Config));
+
+                    if (!m_SocketServer.Start())
+                    {
+                        m_StateCode = ServerStateConst.NotStarted;
+                        return false;
+                    }
+
+                    m_ServerResources = transaction.Items.OfType<ServerResourceItem>().ToArray();
+                    transaction.Commit();
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Error(e);
                 return false;
             }
 
             StartedTime = DateTime.Now;
             m_StateCode = ServerStateConst.Running;
 
-            m_ServerSummary.StartedTime = StartedTime;
-            m_ServerSummary.IsRunning = true;
+            m_ServerStatus[StatusInfoKeys.IsRunning] = true;
+            m_ServerStatus[StatusInfoKeys.StartedTime] = StartedTime;
 
-            OnStartup();
+            try
+            {
+                var newSessionHandler = m_NewSessionHandler;
+                if (newSessionHandler != null)
+                    newSessionHandler.Start();
 
-            if (Logger.IsInfoEnabled)
-                Logger.Info(string.Format("The server instance {0} has been started!", Name));
+                OnStarted();
+            }
+            catch (Exception e)
+            {
+                if (Logger.IsErrorEnabled)
+                {
+                    Logger.Error("One exception wa thrown in the method 'OnStarted()'.", e);
+                }
+            }
+            finally
+            {
+                if (Logger.IsInfoEnabled)
+                    Logger.Info(string.Format("The server instance {0} has been started!", Name));
+            }
+
+            if (Config.ClearIdleSession)
+                StartClearSessionTimer();
 
             return true;
         }
 
+
         /// <summary>
-        /// Called when [startup].
+        /// Called when [started].
         /// </summary>
-        protected virtual void OnStartup()
+        protected virtual void OnStarted()
         {
 
         }
@@ -999,10 +1239,39 @@ namespace SuperSocket.SocketBase
 
             m_StateCode = ServerStateConst.NotStarted;
 
+            //Rollback as clean
+            Parallel.ForEach(m_ServerResources, r => r.Rollback());
+            GC.Collect();
+            GC.WaitForFullGCComplete();
+
+            var newSessionHandler = m_NewSessionHandler;
+            if (newSessionHandler != null)
+                newSessionHandler.Stop();
+
             OnStopped();
 
-            m_ServerSummary.IsRunning = false;
-            m_ServerSummary.StartedTime = null;
+            m_ServerStatus[StatusInfoKeys.IsRunning] = false;
+            m_ServerStatus[StatusInfoKeys.StartedTime] = null;
+
+            if (m_ClearIdleSessionTimer != null)
+            {
+                m_ClearIdleSessionTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                m_ClearIdleSessionTimer.Dispose();
+                m_ClearIdleSessionTimer = null;
+            }
+
+            var sessions = m_SessionContainer.ToArray();
+
+            if (sessions.Length > 0)
+            {
+                Parallel.ForEach(sessions, (session) =>
+                {
+                    if (session != null && session.Connected)
+                    {
+                        session.Close(CloseReason.ServerShutdown);
+                    }
+                });
+            }
 
             if (Logger.IsInfoEnabled)
                 Logger.Info(string.Format("The server instance {0} has been stopped!", Name));
@@ -1013,9 +1282,9 @@ namespace SuperSocket.SocketBase
         /// </summary>
         /// <param name="commandName">Name of the command.</param>
         /// <returns></returns>
-        private CommandInfo<ICommand<TAppSession, TRequestInfo>> GetCommandByName(string commandName)
+        private CommandInfo<ICommand<TAppSession, TPackageInfo>> GetCommandByName(TKey commandName)
         {
-            CommandInfo<ICommand<TAppSession, TRequestInfo>> commandProxy;
+            CommandInfo<ICommand<TAppSession, TPackageInfo>> commandProxy;
 
             if (m_CommandContainer.TryGetValue(commandName, out commandProxy))
                 return commandProxy;
@@ -1056,24 +1325,43 @@ namespace SuperSocket.SocketBase
             return handler((TAppSession)session, buffer, offset, length);
         }
 
-        private RequestHandler<TAppSession, TRequestInfo> m_RequestHandler;
+        private RequestHandler<TAppSession, TPackageInfo> m_RequestHandler;
 
         /// <summary>
         /// Occurs when a full request item received.
         /// </summary>
-        public virtual event RequestHandler<TAppSession, TRequestInfo> NewRequestReceived
+        public virtual event RequestHandler<TAppSession, TPackageInfo> NewRequestReceived
         {
             add { m_RequestHandler += value; }
             remove { m_RequestHandler -= value; }
         }
 
+        private RequestHandler<TAppSession, TPackageInfo> CreateNewRequestReceivedHandler(SessionHandler<IAppSession, IPackageInfo> externalHandler)
+        {
+            return (s, p) => externalHandler(s, p);
+        }
+
+        event SessionHandler<IAppSession, IPackageInfo> IAppServer.NewRequestReceived
+        {
+            add
+            {
+                m_RequestHandler += CreateNewRequestReceivedHandler(value);
+            }
+            remove
+            {
+                m_RequestHandler -= CreateNewRequestReceivedHandler(value);
+            }
+        }
+
         /// <summary>
         /// Executes the command.
         /// </summary>
-        /// <param name="session">The session.</param>
-        /// <param name="requestInfo">The request info.</param>
-        protected virtual void ExecuteCommand(TAppSession session, TRequestInfo requestInfo)
+        /// <param name="context">The context.</param>
+        protected virtual void ExecuteCommand(IRequestExecutingContext<TAppSession, TPackageInfo> context)
         {
+            var requestInfo = context.RequestInfo;
+            var session = context.Session;
+
             if (m_RequestHandler == null)
             {
                 var commandProxy = GetCommandByName(requestInfo.Key);
@@ -1093,7 +1381,9 @@ namespace SuperSocket.SocketBase
                     }
                     else
                     {
-                        var commandContext = new CommandExecutingContext(session, requestInfo, command);
+                        var commandContext = context as RequestExecutingContext<TAppSession, TPackageInfo>;
+
+                        commandContext.CurrentCommand = command;
 
                         for (var i = 0; i < commandFilters.Length; i++)
                         {
@@ -1104,19 +1394,38 @@ namespace SuperSocket.SocketBase
                             {
                                 cancelled = true;
                                 if(Logger.IsInfoEnabled)
-                                    Logger.Info(session, string.Format("The executing of the command {0} was cancelled by the command filter {1}.", command.Name, filter.GetType().ToString()));
+                                    Logger.Info(string.Format("The executing of the command {0} was cancelled by the command filter {1}.", command.Name, filter.GetType().ToString()), session);
                                 break;
                             }
                         }
 
                         if (!cancelled)
                         {
-                            command.ExecuteCommand(session, requestInfo);
+                            try
+                            {
+                                command.ExecuteCommand(session, requestInfo);
+                            }
+                            catch (Exception exc)
+                            {
+                                commandContext.Exception = exc;
+                            }
 
                             for (var i = 0; i < commandFilters.Length; i++)
                             {
                                 var filter = commandFilters[i];
                                 filter.OnCommandExecuted(commandContext);
+                            }
+
+                            if (commandContext.Exception != null && !commandContext.ExceptionHandled)
+                            {
+                                try
+                                {
+                                    session.InternalHandleExcetion(commandContext.Exception);
+                                }
+                                catch
+                                {
+
+                                }
                             }
                         }
                     }
@@ -1126,7 +1435,7 @@ namespace SuperSocket.SocketBase
                         session.PrevCommand = requestInfo.Key;
 
                         if (Config.LogCommand && Logger.IsInfoEnabled)
-                            Logger.Info(session, string.Format("Command - {0}", requestInfo.Key));
+                            Logger.Info(string.Format("Command - {0}", requestInfo.Key), session);
                     }
                 }
                 else
@@ -1153,7 +1462,7 @@ namespace SuperSocket.SocketBase
                 session.LastActiveTime = DateTime.Now;
 
                 if (Config.LogCommand && Logger.IsInfoEnabled)
-                    Logger.Info(session, string.Format("Command - {0}", requestInfo.Key));
+                    Logger.Info(string.Format("Command - {0}", requestInfo.Key), session);
             }
 
             Interlocked.Increment(ref m_TotalHandledRequests);
@@ -1164,9 +1473,59 @@ namespace SuperSocket.SocketBase
         /// </summary>
         /// <param name="session">The session.</param>
         /// <param name="requestInfo">The request info.</param>
-        internal void ExecuteCommand(IAppSession session, TRequestInfo requestInfo)
+        internal void ExecuteCommand(IAppSession session, TPackageInfo requestInfo)
         {
-            this.ExecuteCommand((TAppSession)session, requestInfo);
+            if (m_RequestHandlingTaskScheduler == null)
+            {
+                var context = RequestExecutingContext<TAppSession, TPackageInfo>.GetFromThreadContext();
+                context.Initialize((TAppSession)session, requestInfo);
+                ExecuteCommandDirect(context, false);
+            }
+            else
+            {
+                var context = m_RequestExecutingContextPool.Get();
+                context.Initialize((TAppSession)session, requestInfo);
+                Task.Factory.StartNew(ExecuteCommandInTask, context, CancellationToken.None, TaskCreationOptions.None, m_RequestHandlingTaskScheduler);
+            }
+        }
+
+        void ExecuteCommandDirect(RequestExecutingContext<TAppSession, TPackageInfo> context, bool returnToPool)
+        {
+            try
+            {
+                this.ExecuteCommand(context);
+            }
+            finally
+            {
+                TryReturnBufferedPackageInfo(context);
+                context.Reset();
+
+                if(returnToPool)
+                    m_RequestExecutingContextPool.Return(context);
+            }
+        }
+
+        void ExecuteCommandInTask(object state)
+        {
+            var context = state as RequestExecutingContext<TAppSession, TPackageInfo>;
+            ExecuteCommandDirect(context, true);
+        }
+
+        bool TryReturnBufferedPackageInfo(RequestExecutingContext<TAppSession, TPackageInfo> context)
+        {
+            var request = context.RequestInfo as IBufferedPackageInfo;
+
+            if (request == null)
+                return false;
+
+            var bufferList = request.Data as BufferList;
+
+            var recycler = context.Session.SocketSession as IBufferRecycler;
+            if (recycler == null)
+                return false;
+
+            recycler.Return(bufferList.GetAllCachedItems(), 0, bufferList.Count);
+            return true;
         }
 
         /// <summary>
@@ -1174,9 +1533,9 @@ namespace SuperSocket.SocketBase
         /// </summary>
         /// <param name="session">The session.</param>
         /// <param name="requestInfo">The request info.</param>
-        void IRequestHandler<TRequestInfo>.ExecuteCommand(IAppSession session, TRequestInfo requestInfo)
+        void IRequestHandler<TPackageInfo>.ExecuteCommand(IAppSession session, TPackageInfo requestInfo)
         {
-            this.ExecuteCommand((TAppSession)session, requestInfo);
+            this.ExecuteCommand(session, requestInfo);
         }
 
         /// <summary>
@@ -1224,33 +1583,61 @@ namespace SuperSocket.SocketBase
             if (!ExecuteConnectionFilters(socketSession.RemoteEndPoint))
                 return NullAppSession;
 
-            var appSession = new TAppSession();
-
-            if (!RegisterSession(socketSession.SessionID, appSession))
-                return NullAppSession;
-
-            appSession.Initialize(this, socketSession, ReceiveFilterFactory.CreateFilter(this, appSession, socketSession.RemoteEndPoint));
-            socketSession.Closed += OnSocketSessionClosed;
-
-            if (Config.LogBasicSessionActivity && Logger.IsInfoEnabled)
-                Logger.InfoFormat("A new session connected!");
-
-            socketSession.Initialize(appSession);
-
-            OnNewSessionConnected(appSession);
+            var appSession = CreateAppSession(socketSession);
+            
+            appSession.Initialize(this, socketSession);
 
             return appSession;
         }
 
         /// <summary>
-        /// Registers the session into session container.
+        /// create a new TAppSession instance, you can override it to create the session instance in your own way
         /// </summary>
-        /// <param name="sessionID">The session ID.</param>
-        /// <param name="appSession">The app session.</param>
-        /// <returns></returns>
-        protected virtual bool RegisterSession(string sessionID, TAppSession appSession)
+        /// <param name="socketSession">the socket session.</param>
+        /// <returns>the new created session instance</returns>
+        protected virtual TAppSession CreateAppSession(ISocketSession socketSession)
         {
+            return new TAppSession();
+        }
+
+        /// <summary>
+        /// Registers the new created app session into the appserver's session container.
+        /// </summary>
+        /// <param name="session">The session.</param>
+        /// <returns></returns>
+        bool IAppServer.RegisterSession(IAppSession session)
+        {
+            var newSessionHandler = m_NewSessionHandler;
+
+            if(newSessionHandler != null)
+            {
+                newSessionHandler.AcceptNewSession(session);
+                return true;
+            }
+
+            return RegisterSession(session);
+        }
+
+        bool RegisterSession(IAppSession session)
+        {
+            var appSession = session as TAppSession;
+
+            if (!RegisterSession(appSession.SessionID, appSession))
+                return false;
+
+            appSession.SocketSession.Closed += OnSocketSessionClosed;
+
+            if (Config.LogBasicSessionActivity && Logger.IsInfoEnabled)
+                Logger.Info("A new session connected!", session);
+
+            OnNewSessionConnected(appSession);
             return true;
+
+        }
+
+        bool ISessionRegister.RegisterSession(IAppSession session)
+        {
+            return RegisterSession(session);
         }
 
 
@@ -1309,8 +1696,8 @@ namespace SuperSocket.SocketBase
         private void OnSocketSessionClosed(ISocketSession session, CloseReason reason)
         {
             //Even if LogBasicSessionActivity is false, we also log the unexpected closing because the close reason probably be useful
-            if (Logger.IsInfoEnabled && (Config.LogBasicSessionActivity || (reason != CloseReason.ServerClosing && reason != CloseReason.ClientClosing && reason != CloseReason.ServerShutdown)))
-                Logger.Info(session, string.Format("This session was closed for {0}!", reason));
+            if (Logger.IsInfoEnabled && (Config.LogBasicSessionActivity || (reason != CloseReason.ServerClosing && reason != CloseReason.ClientClosing && reason != CloseReason.ServerShutdown && reason != CloseReason.SocketError)))
+                Logger.Info(string.Format("This session was closed for {0}!", reason), session);
 
             var appSession = session.AppSession as TAppSession;
             appSession.Connected = false;
@@ -1334,6 +1721,17 @@ namespace SuperSocket.SocketBase
         /// <param name="reason">The reason.</param>
         protected virtual void OnSessionClosed(TAppSession session, CloseReason reason)
         {
+            string sessionID = session.SessionID;
+
+            if (!string.IsNullOrEmpty(sessionID))
+            {
+                if (!m_SessionContainer.TryUnregisterSession(sessionID))
+                {
+                    if (Logger.IsErrorEnabled)
+                        Logger.Error("Failed to remove this session, Because it has't been in session container!", session);
+                }
+            }
+
             var handler = m_SessionClosed;
 
             if (handler != null)
@@ -1357,116 +1755,298 @@ namespace SuperSocket.SocketBase
             }
         }
 
+        #region Session management
+
+        private ISessionContainer<TAppSession> m_SessionContainer;
+
+        /// <summary>
+        /// Registers the session into session container.
+        /// </summary>
+        /// <param name="sessionID">The session ID.</param>
+        /// <param name="appSession">The app session.</param>
+        /// <returns></returns>
+        protected virtual bool RegisterSession(string sessionID, TAppSession appSession)
+        {
+            if (m_SessionContainer.TryRegisterSession(appSession))
+                return true;
+
+            if (Logger.IsErrorEnabled)
+                Logger.Error("The session is refused because the it's ID already exists!", appSession);
+
+            return false;
+        }
+
         /// <summary>
         /// Gets the app session by ID.
         /// </summary>
         /// <param name="sessionID">The session ID.</param>
         /// <returns></returns>
-        public abstract TAppSession GetAppSessionByID(string sessionID);
+        public TAppSession GetSessionByID(string sessionID)
+        {
+            if (string.IsNullOrEmpty(sessionID))
+                return NullAppSession;
+
+            TAppSession targetSession = m_SessionContainer.GetSessionByID(sessionID);
+            return targetSession;
+        }
 
         /// <summary>
         /// Gets the app session by ID.
         /// </summary>
         /// <param name="sessionID"></param>
         /// <returns></returns>
-        IAppSession IAppServer.GetAppSessionByID(string sessionID)
+        IAppSession IAppServer.GetSessionByID(string sessionID)
         {
-            return this.GetAppSessionByID(sessionID);
-        }
-
-        /// <summary>
-        /// Gets the matched sessions from sessions snapshot.
-        /// </summary>
-        /// <param name="critera">The prediction critera.</param>
-        public virtual IEnumerable<TAppSession> GetSessions(Func<TAppSession, bool> critera)
-        {
-            throw new NotSupportedException();
-        }
-
-        /// <summary>
-        /// Gets all sessions in sessions snapshot.
-        /// </summary>
-        public virtual IEnumerable<TAppSession> GetAllSessions()
-        {
-            throw new NotSupportedException();
+            return this.GetSessionByID(sessionID);
         }
 
         /// <summary>
         /// Gets the total session count.
         /// </summary>
-        public abstract int SessionCount { get; }
-
-        #region Server state
-
-        private ServerSummary CreateServerSummary()
-        {
-            var type = ServerSummaryType;
-            var serverSummary = (ServerSummary)Activator.CreateInstance(type);
-            serverSummary.Name = Name;
-            serverSummary.Listeners = Listeners;
-            serverSummary.MaxConnectionNumber = Config.MaxConnectionNumber;
-            return serverSummary;
-        }
-
-        /// <summary>
-        /// Gets the type of the server state. The type must inherit from ServerState
-        /// </summary>
-        /// <value>
-        /// The type of the server state.
-        /// </value>
-        protected virtual Type ServerSummaryType
+        public int SessionCount
         {
             get
             {
-                return typeof(ServerSummary);
+                return m_SessionContainer.Count;
             }
         }
 
-        private ServerSummary m_ServerSummary;
+        #region Clear idle sessions
 
-        /// <summary>
-        /// Gets the state of the server.
-        /// </summary>
-        /// <value>
-        /// The state data of the server.
-        /// </value>
-        public ServerSummary Summary
+        private System.Threading.Timer m_ClearIdleSessionTimer = null;
+
+        private void StartClearSessionTimer()
         {
-            get { return m_ServerSummary; }
+            int interval = Config.ClearIdleSessionInterval * 1000;//in milliseconds
+            m_ClearIdleSessionTimer = new System.Threading.Timer(ClearIdleSession, new object(), interval, interval);
         }
 
-        ServerSummary IWorkItem.CollectServerSummary(NodeSummary nodeSummary)
+        /// <summary>
+        /// Clears the idle session.
+        /// </summary>
+        /// <param name="state">The state.</param>
+        private void ClearIdleSession(object state)
         {
-            UpdateServerSummary(m_ServerSummary);
-            this.AsyncRun(() => OnServerSummaryCollected(nodeSummary, m_ServerSummary), e => Logger.Error(e));
-            return m_ServerSummary;
+            if (Monitor.TryEnter(state))
+            {
+                try
+                {
+                    DateTime now = DateTime.Now;
+                    DateTime timeOut = now.AddSeconds(0 - Config.IdleSessionTimeOut);
+
+                    var timeOutSessions = m_SessionContainer.Where(s => s.LastActiveTime <= timeOut);
+
+                    System.Threading.Tasks.Parallel.ForEach(timeOutSessions, s =>
+                    {
+                        if (Logger.IsInfoEnabled)
+                            Logger.Info(string.Format("The session will be closed for {0} timeout, the session start time: {1}, last active time: {2}!", now.Subtract(s.LastActiveTime).TotalSeconds, s.StartTime, s.LastActiveTime), s);
+                        s.Close(CloseReason.TimeOut);
+                    });
+                }
+                catch (Exception e)
+                {
+                    if (Logger.IsErrorEnabled)
+                        Logger.Error("Clear idle session error!", e);
+                }
+                finally
+                {
+                    Monitor.Exit(state);
+                }
+            }
+        }
+
+        #endregion
+
+        #region Search session utils
+
+        /// <summary>
+        /// Gets the matched sessions from sessions snapshot.
+        /// </summary>
+        /// <param name="critera">The prediction critera.</param>
+        /// <returns></returns>
+        public IEnumerable<TAppSession> GetSessions(Func<TAppSession, bool> critera)
+        {
+            return m_SessionContainer.Where(critera);
+        }
+
+        /// <summary>
+        /// Gets all sessions in sessions snapshot.
+        /// </summary>
+        /// <returns></returns>
+        public IEnumerable<TAppSession> GetAllSessions()
+        {
+            return m_SessionContainer;
+        }
+
+        #endregion
+
+        #endregion
+
+        /// <summary>
+        /// Gets the physical file path by the relative file path,
+        /// search both in the appserver's root and in the supersocket root dir if the isolation level has been set other than 'None'.
+        /// </summary>
+        /// <param name="relativeFilePath">The relative file path.</param>
+        /// <returns></returns>
+        public string GetFilePath(string relativeFilePath)
+        {
+            var filePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, relativeFilePath);
+
+            if (!System.IO.File.Exists(filePath) && RootConfig != null && RootConfig.Isolation != IsolationMode.None)
+            {
+                var rootDir = System.IO.Directory.GetParent(AppDomain.CurrentDomain.BaseDirectory).Parent.FullName;
+                var rootFilePath = System.IO.Path.Combine(rootDir, relativeFilePath);
+
+                if (System.IO.File.Exists(rootFilePath))
+                    return rootFilePath;
+            }
+
+            return filePath;
+        }
+
+        #region IActiveConnector
+
+        /// <summary>
+        /// Connect the remote endpoint actively.
+        /// </summary>
+        /// <param name="targetEndPoint">The target end point.</param>
+        /// <returns></returns>
+        /// <exception cref="System.Exception">This server cannot support active connect.</exception>
+        Task<ActiveConnectResult> IActiveConnector.ActiveConnect(EndPoint targetEndPoint)
+        {
+            var activeConnector = m_SocketServer as IActiveConnector;
+
+            if (activeConnector == null)
+                throw new Exception("This server cannot support active connect.");
+
+            return activeConnector.ActiveConnect(targetEndPoint);
+        }
+
+        #endregion IActiveConnector
+
+        #region ISystemEndPoint
+        /// <summary>
+        /// Transfers the system message
+        /// </summary>
+        /// <param name="messageType">Type of the message.</param>
+        /// <param name="messageData">The message data.</param>
+        void ISystemEndPoint.TransferSystemMessage(string messageType, object messageData)
+        {
+            OnSystemMessageReceived(messageType, messageData);
+        }
+
+        /// <summary>
+        /// Called when [system message received].
+        /// </summary>
+        /// <param name="messageType">Type of the message.</param>
+        /// <param name="messageData">The message data.</param>
+        protected virtual void OnSystemMessageReceived(string messageType, object messageData)
+        {
+
+        }
+
+        #endregion ISystemEndPoint
+
+        #region IStatusInfoSource
+
+        private StatusInfoCollection m_ServerStatus;
+
+        StatusInfoAttribute[] IStatusInfoSource.GetServerStatusMetadata()
+        {
+            return this.GetType().GetStatusInfoMetadata();
+        }
+
+        StatusInfoCollection IStatusInfoSource.CollectServerStatus(StatusInfoCollection bootstrapStatus)
+        {
+            UpdateServerStatus(m_ServerStatus);
+            this.AsyncRun(() => OnServerStatusCollected(bootstrapStatus, m_ServerStatus), e => Logger.Error(e));
+            return m_ServerStatus;
         }
 
         /// <summary>
         /// Updates the summary of the server.
         /// </summary>
-        /// <param name="serverSummary">The server summary.</param>
-        protected virtual void UpdateServerSummary(ServerSummary serverSummary)
+        /// <param name="serverStatus">The server status.</param>
+        protected virtual void UpdateServerStatus(StatusInfoCollection serverStatus)
         {
             DateTime now = DateTime.Now;
 
-            serverSummary.IsRunning = (m_StateCode == ServerStateConst.Running);
-            serverSummary.TotalConnections = this.SessionCount;
+            serverStatus[StatusInfoKeys.IsRunning] = m_StateCode == ServerStateConst.Running;
+            serverStatus[StatusInfoKeys.TotalConnections] = this.SessionCount;
 
-            serverSummary.RequestHandlingSpeed = ((this.TotalHandledRequests - serverSummary.TotalHandledRequests) / now.Subtract(serverSummary.CollectedTime).TotalSeconds);
-            serverSummary.TotalHandledRequests = this.TotalHandledRequests;
+            var totalHandledRequests0 = serverStatus.GetValue<long>(StatusInfoKeys.TotalHandledRequests, 0);
 
-            serverSummary.CollectedTime = now;
+            var totalHandledRequests = this.TotalHandledRequests;
+
+            serverStatus[StatusInfoKeys.RequestHandlingSpeed] = ((totalHandledRequests - totalHandledRequests0) / now.Subtract(serverStatus.CollectedTime).TotalSeconds);
+            serverStatus[StatusInfoKeys.TotalHandledRequests] = totalHandledRequests;
+
+            if (State == ServerState.Running)
+            {
+                var sendingQueuePool = m_SocketServer.SendingQueuePool;
+                serverStatus[StatusInfoKeys.AvialableSendingQueueItems] = sendingQueuePool.AvailableCount;
+                serverStatus[StatusInfoKeys.TotalSendingQueueItems] = sendingQueuePool.TotalCount;
+            }
+            else
+            {
+                serverStatus[StatusInfoKeys.AvialableSendingQueueItems] = 0;
+                serverStatus[StatusInfoKeys.TotalSendingQueueItems] = 0;
+            }
+
+            serverStatus.CollectedTime = now;
         }
 
         /// <summary>
-        /// Called when [summary data collected], you can override this method to get collected performance data
+        /// Called when [server status collected].
         /// </summary>
-        /// <param name="nodeSummary">The node summary.</param>
-        /// <param name="serverSummary">The server summary.</param>
-        protected virtual void OnServerSummaryCollected(NodeSummary nodeSummary, ServerSummary serverSummary)
+        /// <param name="bootstrapStatus">The bootstrapStatus status.</param>
+        /// <param name="serverStatus">The server status.</param>
+        protected virtual void OnServerStatusCollected(StatusInfoCollection bootstrapStatus, StatusInfoCollection serverStatus)
         {
 
+        }
+
+        #endregion IStatusInfoSource
+
+        #region service provider
+
+        private Dictionary<Type, object> m_ServiceInstances = new Dictionary<Type, object>();
+
+        /// <summary>
+        /// Gets the service object of the specified type.
+        /// </summary>
+        /// <param name="serviceType">An object that specifies the type of service object to get.</param>
+        /// <returns>
+        /// A service object of type <paramref name="serviceType" />.-or- null if there is no service object of type <paramref name="serviceType" />.
+        /// </returns>
+        public object GetService(Type serviceType)
+        {
+            object instance;
+
+            if (!m_ServiceInstances.TryGetValue(serviceType, out instance))
+                return null;
+
+            return instance;
+        }
+
+        /// <summary>
+        /// Gets the service object of the specified type.
+        /// </summary>
+        /// <typeparam name="T">the type of service object to get</typeparam>
+        /// <returns>A service object of type T</returns>
+        public T GetService<T>()
+        {
+            return (T)GetService(typeof(T));
+        }
+
+        /// <summary>
+        /// Registers the service object with the specific type.
+        /// </summary>
+        /// <typeparam name="T">the type of service object to get</typeparam>
+        /// <param name="serviceInstance">The service instance.</param>
+        public void RegisterService<T>(T serviceInstance)
+        {
+            m_ServiceInstances[typeof(T)] = serviceInstance;
         }
 
         #endregion

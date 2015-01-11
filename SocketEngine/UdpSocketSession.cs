@@ -7,15 +7,19 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using SuperSocket.Common;
+using SuperSocket.ProtoBase;
 using SuperSocket.SocketBase;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Protocol;
+using SuperSocket.SocketBase.Utils;
 
 namespace SuperSocket.SocketEngine
 {
     class UdpSocketSession : SocketSession
     {
         private Socket m_ServerSocket;
+
+        private SocketAsyncEventArgs m_SocketEventArgSend;
 
         public UdpSocketSession(Socket serverSocket, IPEndPoint remoteEndPoint)
             : base(remoteEndPoint.ToString())
@@ -29,6 +33,18 @@ namespace SuperSocket.SocketEngine
         {
             m_ServerSocket = serverSocket;
             RemoteEndPoint = remoteEndPoint;
+        }
+
+        public override void Initialize(IAppSession appSession)
+        {
+            base.Initialize(appSession);
+
+            if (!SyncSend)
+            {
+                //Initialize SocketAsyncEventArgs for sending
+                m_SocketEventArgSend = new SocketAsyncEventArgs();
+                m_SocketEventArgSend.Completed += new EventHandler<SocketAsyncEventArgs>(OnSendingCompleted);
+            }
         }
 
         public override IPEndPoint LocalEndPoint
@@ -50,21 +66,23 @@ namespace SuperSocket.SocketEngine
             StartSession();
         }
 
-        protected override void SendAsync(IPosList<ArraySegment<byte>> items)
+        protected override void SendAsync(SendingQueue queue)
         {
-            var e = new SocketAsyncEventArgs();
-            e.Completed += new EventHandler<SocketAsyncEventArgs>(SendingCompleted);
+            var e = m_SocketEventArgSend;
             e.RemoteEndPoint = RemoteEndPoint;
-            e.UserToken = items;
+            e.UserToken = queue;
 
-            var item = items[items.Position];
+            var item = queue[queue.Position];
             e.SetBuffer(item.Array, item.Offset, item.Count);
 
-            m_ServerSocket.SendToAsync(e);
+            if (!m_ServerSocket.SendToAsync(e))
+                OnSendingCompleted(this, e);
         }
 
-        void SendingCompleted(object sender, SocketAsyncEventArgs e)
+        void OnSendingCompleted(object sender, SocketAsyncEventArgs e)
         {
+            var queue = e.UserToken as SendingQueue;
+
             if (e.SocketError != SocketError.Success)
             {
                 var log = AppSession.Logger;
@@ -72,32 +90,33 @@ namespace SuperSocket.SocketEngine
                 if (log.IsErrorEnabled)
                     log.Error(new SocketException((int)e.SocketError));
 
+                e.UserToken = null;
+                OnSendError(queue, CloseReason.SocketError);
                 return;
             }
 
-            var items = e.UserToken as IPosList<ArraySegment<byte>>;
+            var newPos = queue.Position + 1;
 
-            var newPos = items.Position + 1;
-
-            if (newPos >= items.Count)
+            if (newPos >= queue.Count)
             {
-                OnSendingCompleted();
+                e.UserToken = null;
+                OnSendingCompleted(queue);
                 return;
             }
 
-            items.Position = newPos;
-            SendAsync(items);
+            queue.Position = newPos;
+            SendAsync(queue);
         }
 
-        protected override void SendSync(IPosList<ArraySegment<byte>> items)
+        protected override void SendSync(SendingQueue queue)
         {
-            for (var i = 0; i < items.Count; i++)
+            for (var i = 0; i < queue.Count; i++)
             {
-                var item = items[i];
+                var item = queue[i];
                 m_ServerSocket.SendTo(item.Array, item.Offset, item.Count, SocketFlags.None, RemoteEndPoint);
             }
-                
-            OnSendingCompleted();
+
+            OnSendingCompleted(queue);
         }
 
         public override void ApplySecureProtocol()
@@ -105,10 +124,27 @@ namespace SuperSocket.SocketEngine
             throw new NotSupportedException();
         }
 
-        public override void Close(CloseReason reason)
+        protected override bool TryValidateClosedBySocket(out Socket socket)
         {
-            if (!IsClosed)
-                OnClose(reason);
+            socket = null;
+            return false;
+        }
+
+        protected override void OnClosed(CloseReason reason)
+        {
+            if (m_SocketEventArgSend != null)
+            {
+                m_SocketEventArgSend.Completed += new EventHandler<SocketAsyncEventArgs>(OnSendingCompleted);
+                m_SocketEventArgSend.Dispose();
+                m_SocketEventArgSend = null;
+            }
+
+            base.OnClosed(reason);
+        }
+
+        protected override void ReturnBuffer(IList<KeyValuePair<ArraySegment<byte>, IBufferState>> buffers, int offset, int length)
+        {
+            //TODO:
         }
     }
 }

@@ -16,6 +16,7 @@ namespace SuperSocket.SocketEngine
     abstract class TcpSocketServerBase : SocketServerBase
     {
         private readonly byte[] m_KeepAliveOptionValues;
+        private readonly byte[] m_KeepAliveOptionOutValues;
         private readonly int m_SendTimeOut;
         private readonly int m_ReceiveBufferSize;
         private readonly int m_SendBufferSize;
@@ -27,6 +28,7 @@ namespace SuperSocket.SocketEngine
 
             uint dummy = 0;
             m_KeepAliveOptionValues = new byte[Marshal.SizeOf(dummy) * 3];
+            m_KeepAliveOptionOutValues = new byte[m_KeepAliveOptionValues.Length];
             //whether enable KeepAlive
             BitConverter.GetBytes((uint)1).CopyTo(m_KeepAliveOptionValues, 0);
             //how long will start first keep alive
@@ -39,7 +41,7 @@ namespace SuperSocket.SocketEngine
             m_SendBufferSize = config.SendBufferSize;
         }
 
-        protected ISocketSession RegisterSession(Socket client, ISocketSession session)
+        protected IAppSession CreateSession(Socket client, ISocketSession session)
         {
             if (m_SendTimeOut > 0)
                 client.SendTimeout = m_SendTimeOut;
@@ -50,21 +52,15 @@ namespace SuperSocket.SocketEngine
             if (m_SendBufferSize > 0)
                 client.SendBufferSize = m_SendBufferSize;
 
-            if(!Platform.SupportSocketIOControlByCodeEnum)
-                client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            if (!Platform.SupportSocketIOControlByCodeEnum)
+                client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, m_KeepAliveOptionValues);
             else
-                client.IOControl(IOControlCode.KeepAliveValues, m_KeepAliveOptionValues, null);
+                client.IOControl(IOControlCode.KeepAliveValues, m_KeepAliveOptionValues, m_KeepAliveOptionOutValues);
 
             client.NoDelay = true;
-            client.UseOnlyOverlappedIO = true;
             client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.DontLinger, true);
 
-            IAppSession appSession = this.AppServer.CreateAppSession(session);
-
-            if (appSession == null)
-                return null;
-
-            return session;
+            return this.AppServer.CreateAppSession(session);
         }
 
         protected override ISocketListener CreateListener(ListenerInfo listenerInfo)

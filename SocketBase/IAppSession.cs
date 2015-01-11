@@ -9,6 +9,7 @@ using SuperSocket.SocketBase.Logging;
 using SuperSocket.SocketBase.Command;
 using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Protocol;
+using SuperSocket.ProtoBase;
 
 namespace SuperSocket.SocketBase
 {
@@ -55,6 +56,12 @@ namespace SuperSocket.SocketBase
         DateTime StartTime { get; }
 
         /// <summary>
+        /// Creates the pipeline processor.
+        /// </summary>
+        /// <returns></returns>
+        IPipelineProcessor CreatePipelineProcessor();
+
+        /// <summary>
         /// Closes this session.
         /// </summary>
         void Close();
@@ -80,67 +87,30 @@ namespace SuperSocket.SocketBase
         Encoding Charset { get; set; }
 
         /// <summary>
-        /// Gets or sets the previous command.
-        /// </summary>
-        /// <value>
-        /// The prev command.
-        /// </value>
-        string PrevCommand { get; set; }
-
-        /// <summary>
-        /// Gets or sets the current executing command.
-        /// </summary>
-        /// <value>
-        /// The current command.
-        /// </value>
-        string CurrentCommand { get; set; }
-
-        /// <summary>
         /// Gets the logger assosiated with this session.
         /// </summary>
         ILog Logger { get; }
 
         /// <summary>
-        /// Processes the request.
-        /// </summary>
-        /// <param name="readBuffer">The read buffer.</param>
-        /// <param name="offset">The offset.</param>
-        /// <param name="length">The length.</param>
-        /// <param name="toBeCopied">if set to <c>true</c> [to be copied].</param>
-        /// <returns>return offset delta of next receiving buffer</returns>
-        int ProcessRequest(byte[] readBuffer, int offset, int length, bool toBeCopied);
-
-        /// <summary>
         /// Starts the session.
         /// </summary>
         void StartSession();
-
-
-        /// <summary>
-        /// Tries to get the data segment to be sent.
-        /// </summary>
-        /// <param name="segments">The segments.</param>
-        /// <returns>
-        /// return whether has data to send
-        /// </returns>
-        bool TryGetSendingData(IList<ArraySegment<byte>> segments);
     }
 
     /// <summary>
     /// The interface for appSession
     /// </summary>
     /// <typeparam name="TAppSession">The type of the app session.</typeparam>
-    /// <typeparam name="TRequestInfo">The type of the request info.</typeparam>
-    public interface IAppSession<TAppSession, TRequestInfo> : IAppSession
-        where TRequestInfo : IRequestInfo
-        where TAppSession : IAppSession, IAppSession<TAppSession, TRequestInfo>, new()
+    /// <typeparam name="TPackageInfo">The type of the request info.</typeparam>
+    public interface IAppSession<TAppSession, TPackageInfo> : IAppSession
+        where TPackageInfo : IPackageInfo
+        where TAppSession : IAppSession, IAppSession<TAppSession, TPackageInfo>, new()
     {
         /// <summary>
         /// Initializes the specified session.
         /// </summary>
         /// <param name="server">The server.</param>
         /// <param name="socketSession">The socket session.</param>
-        /// <param name="requestFilter">The Receive filter.</param>
-        void Initialize(IAppServer<TAppSession, TRequestInfo> server, ISocketSession socketSession, IReceiveFilter<TRequestInfo> requestFilter);
+        void Initialize(IAppServer<TAppSession, TPackageInfo> server, ISocketSession socketSession);
     }
 }

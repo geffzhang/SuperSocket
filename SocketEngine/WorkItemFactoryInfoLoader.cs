@@ -6,6 +6,7 @@ using SuperSocket.SocketBase.Config;
 using SuperSocket.SocketBase.Logging;
 using SuperSocket.SocketBase.Provider;
 using SuperSocket.SocketEngine.Configuration;
+using SuperSocket.SocketBase.Metadata;
 
 namespace SuperSocket.SocketEngine
 {
@@ -111,6 +112,13 @@ namespace SuperSocket.SocketEngine
                 var workItemFactory = new WorkItemFactoryInfo();
                 workItemFactory.Config = serverConfig;
                 workItemFactory.ServerType = serverType;
+
+                var serverTypeMeta = GetServerTypeMetadata(serverType);
+                if (serverTypeMeta != null)
+                {
+                    workItemFactory.StatusInfoMetadata = serverTypeMeta.StatusInfoMetadata;
+                    workItemFactory.IsServerManager = serverTypeMeta.IsServerManager;
+                }
 
                 var factories = new List<ProviderFactoryInfo>();
 
@@ -231,6 +239,16 @@ namespace SuperSocket.SocketEngine
         protected virtual string ValidateProviderType(string typeName)
         {
             return typeName;
+        }
+
+        /// <summary>
+        /// Gets the app server type's metadata, the return value is not required in this mode.
+        /// </summary>
+        /// <param name="typeName">Name of the type.</param>
+        /// <returns></returns>
+        protected virtual ServerTypeMetadata GetServerTypeMetadata(string typeName)
+        {
+            return null;
         }
 
         /// <summary>

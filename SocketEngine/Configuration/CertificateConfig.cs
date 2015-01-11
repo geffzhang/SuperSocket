@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Configuration;
 using SuperSocket.SocketBase.Config;
+using System.Security.Cryptography.X509Certificates;
 
 namespace SuperSocket.SocketEngine.Configuration
 {
@@ -53,6 +54,21 @@ namespace SuperSocket.SocketEngine.Configuration
         }
 
         /// <summary>
+        /// Gets the store location of the certificate.
+        /// </summary>
+        /// <value>
+        /// The store location.
+        /// </value>
+        [ConfigurationProperty("storeLocation", IsRequired = false, DefaultValue = "CurrentUser")]
+        public StoreLocation StoreLocation
+        {
+            get
+            {
+                return (StoreLocation)this["storeLocation"];
+            }
+        }
+
+        /// <summary>
         /// Gets the thumbprint.
         /// </summary>
         [ConfigurationProperty("thumbprint", IsRequired = false)]
@@ -61,6 +77,33 @@ namespace SuperSocket.SocketEngine.Configuration
             get
             {
                 return this["thumbprint"] as string;
+            }
+        }
+
+        /// <summary>
+        /// Gets a value indicating whether [client certificate required].
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if [client certificate required]; otherwise, <c>false</c>.
+        /// </value>
+        [ConfigurationProperty("clientCertificateRequired", IsRequired = false, DefaultValue = false)]
+        public bool ClientCertificateRequired
+        {
+            get
+            {
+                return (bool)this["clientCertificateRequired"];
+            }
+        }
+
+        /// <summary>
+        /// Gets a value that will be used to instantiate the X509Certificate2 object in the CertificateManager
+        /// </summary>
+        [ConfigurationProperty("keyStorageFlags", IsRequired = false, DefaultValue = X509KeyStorageFlags.DefaultKeySet)]
+        public X509KeyStorageFlags KeyStorageFlags
+        {
+            get
+            {
+                return (X509KeyStorageFlags)this["keyStorageFlags"];
             }
         }
 
